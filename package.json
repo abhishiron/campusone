@@ -1,0 +1,16 @@
+{
+  "name": "campusone",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CampusOne - campus management system (minor project demo)",
+  "scripts": {
+    "setup": "npm install && npm --prefix backend install && npm --prefix frontend install && npm --prefix backend run db:generate && npm --prefix backend run db:reset",
+    "dev": "concurrently -n api,web -c blue,green \"npm --prefix backend run dev\" \"npm --prefix frontend run dev\"",
+    "reset-data": "npm --prefix backend run db:reset",
+    "test:api": "npm --prefix backend run test:api",
+    "build": "npm --prefix backend run build && npm --prefix frontend run build"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.1"
+  }
+}

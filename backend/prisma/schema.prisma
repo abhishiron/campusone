@@ -1,0 +1,118 @@
+// CampusOne data model.
+// Runs on SQLite for a zero-setup demo. To move to PostgreSQL, change
+// `provider` to "postgresql", set DATABASE_URL to your Postgres URL and run `npm run db:push`.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String         @id @default(cuid())
+  name          String
+  email         String         @unique
+  passwordHash  String
+  role          String // ADMIN | TEACHER | STUDENT | PARENT
+  createdAt     DateTime       @default(now())
+  student       Student?
+  children      Student[]      @relation("ParentChildren")
+  courses       Course[]
+  announcements Announcement[]
+  notifications Notification[]
+}
+
+model Classroom {
+  id       String    @id @default(cuid())
+  name     String    @unique
+  students Student[]
+  courses  Course[]
+}
+
+model Student {
+  id          String       @id @default(cuid())
+  userId      String       @unique
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  rollNo      String       @unique
+  classroomId String
+  classroom   Classroom    @relation(fields: [classroomId], references: [id])
+  parentId    String?
+  parent      User?        @relation("ParentChildren", fields: [parentId], references: [id], onDelete: SetNull)
+  attendance  Attendance[]
+  submissions Submission[]
+}
+
+model Course {
+  id          String       @id @default(cuid())
+  code        String       @unique
+  name        String
+  classroomId String
+  classroom   Classroom    @relation(fields: [classroomId], references: [id])
+  teacherId   String
+  teacher     User         @relation(fields: [teacherId], references: [id])
+  attendance  Attendance[]
+  assignments Assignment[]
+}
+
+model Attendance {
+  id        String  @id @default(cuid())
+  studentId String
+  student   Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  courseId  String
+  course    Course  @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  date      String // YYYY-MM-DD
+  status    String // PRESENT | ABSENT | LATE
+
+  @@unique([studentId, courseId, date])
+}
+
+model Assignment {
+  id          String       @id @default(cuid())
+  courseId    String
+  course      Course       @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  title       String
+  description String
+  dueDate     DateTime
+  maxMarks    Int
+  createdAt   DateTime     @default(now())
+  submissions Submission[]
+}
+
+model Submission {
+  id           String     @id @default(cuid())
+  assignmentId String
+  assignment   Assignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  studentId    String
+  student      Student    @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  content      String
+  submittedAt  DateTime   @default(now())
+  marks        Int?
+  feedback     String?
+  gradedAt     DateTime?
+
+  @@unique([assignmentId, studentId])
+}
+
+model Announcement {
+  id        String   @id @default(cuid())
+  title     String
+  body      String
+  audience  String // ALL | STUDENT | PARENT | TEACHER
+  authorId  String
+  author    User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  body      String
+  link      String?
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
