@@ -22,11 +22,7 @@ export class AccessService {
       await this.assertCanViewStudent(user, studentId);
       return studentId;
     }
-    if (user.role === 'STUDENT') {
-      const s = await this.prisma.student.findUnique({ where: { userId: user.id } });
-      if (!s) throw new NotFoundException('Student profile not found.');
-      return s.id;
-    }
+    if (user.role === 'STUDENT') return (await this.ownStudent(user)).id;
     if (user.role === 'PARENT') {
       const s = await this.prisma.student.findFirst({ where: { parentId: user.id }, orderBy: { rollNo: 'asc' } });
       if (!s) throw new NotFoundException('No child is linked to this account yet.');
@@ -35,12 +31,19 @@ export class AccessService {
     throw new ForbiddenException('Choose a student first.');
   }
 
+  /** The student profile of a signed-in student. */
+  async ownStudent(user: AuthUser) {
+    const s = await this.prisma.student.findUnique({ where: { userId: user.id } });
+    if (!s) throw new NotFoundException('Student profile not found.');
+    return s;
+  }
+
   /** Teachers may only touch their own courses; admins may touch all. */
   async assertCanManageCourse(user: AuthUser, courseId: string) {
     const course = await this.prisma.course.findUnique({ where: { id: courseId } });
     if (!course) throw new NotFoundException('Course not found.');
-    if (user.role === 'TEACHER' && course.teacherId !== user.id) throw new ForbiddenException('This course is assigned to another teacher.');
-    if (user.role !== 'TEACHER' && user.role !== 'ADMIN') throw new ForbiddenException('Only teachers can do this.');
+    if (user.role === 'TEACHER' && course.teacherId !== user.id) throw new ForbiddenException('This course is assigned to another professor.');
+    if (user.role !== 'TEACHER' && user.role !== 'ADMIN') throw new ForbiddenException('Only professors can do this.');
     return course;
   }
 }

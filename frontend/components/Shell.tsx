@@ -1,101 +1,127 @@
 'use client';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Bell, CalendarCheck, ClipboardList, GraduationCap, LayoutDashboard, LogOut, Megaphone, Menu, School, Users, X, type LucideIcon } from 'lucide-react';
-import { useAuth } from '@/lib/auth';
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { Icon, Logo, type IconName } from './Icon';
+import { Avatar, LEVEL_TEXT, Modal, levelTone } from './ui';
+import { roleKey, useAuth } from '@/lib/auth';
 import { api } from '@/lib/api';
-import { roleLabel, timeAgo } from '@/lib/format';
-import type { AppNotification, Role } from '@/lib/types';
+import { ago } from '@/lib/format';
+import type { AppNotification, AttendanceSummary, Role } from '@/lib/types';
+import { attNote } from './attendance';
 
-const NAV: Record<Role, { href: string; label: string; icon: LucideIcon }[]> = {
-  ADMIN: [
-    { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-    { href: '/people', label: 'People', icon: Users },
-    { href: '/classes', label: 'Classes & courses', icon: School },
-    { href: '/announcements', label: 'Announcements', icon: Megaphone },
-  ],
+type NavItem = [href: string, label: string, icon: IconName] | [group: '#', label: string];
+const NAV: Record<Role, NavItem[]> = {
+  ADMIN: [['/overview', 'Overview', 'grid'], ['/users', 'Users', 'users'], ['/courses', 'Courses', 'book'], ['/announcements', 'Announcements', 'speaker']],
   TEACHER: [
-    { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-    { href: '/attendance', label: 'Attendance', icon: CalendarCheck },
-    { href: '/assignments', label: 'Assignments', icon: ClipboardList },
-    { href: '/announcements', label: 'Announcements', icon: Megaphone },
+    ['/overview', 'Overview', 'grid'], ['/attendance', 'Attendance', 'calcheck'], ['/assignments', 'Assignments', 'file'], ['/grades', 'Grades', 'chart'],
+    ['/timetable', 'Timetable', 'cal'], ['/leaves', 'Leave requests', 'leave'], ['/announcements', 'Announcements', 'speaker'],
   ],
   STUDENT: [
-    { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-    { href: '/attendance', label: 'Attendance', icon: CalendarCheck },
-    { href: '/assignments', label: 'Assignments', icon: ClipboardList },
-    { href: '/grades', label: 'Grades', icon: GraduationCap },
-    { href: '/announcements', label: 'Announcements', icon: Megaphone },
+    ['/overview', 'Overview', 'grid'],
+    ['#', 'Academics'], ['/checkin', 'Check in', 'pin'], ['/attendance', 'Attendance', 'calcheck'], ['/assignments', 'Assignments', 'file'], ['/grades', 'Grades', 'chart'], ['/timetable', 'Timetable', 'cal'], ['/exams', 'Exams', 'exam'],
+    ['#', 'Together'], ['/study', 'Study rooms', 'video'], ['/resources', 'Notes and PYQs', 'notes'], ['/announcements', 'Announcements', 'speaker'],
+    ['#', 'Campus'], ['/library', 'Library', 'lib'], ['/fees', 'Fees', 'rupee'], ['/leaves', 'Leave and certificates', 'leave'], ['/placements', 'Placements', 'brief'],
   ],
   PARENT: [
-    { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-    { href: '/attendance', label: 'Attendance', icon: CalendarCheck },
-    { href: '/assignments', label: 'Assignments', icon: ClipboardList },
-    { href: '/grades', label: 'Grades', icon: GraduationCap },
-    { href: '/announcements', label: 'Announcements', icon: Megaphone },
+    ['/overview', 'Overview', 'grid'], ['/attendance', 'Attendance', 'calcheck'], ['/assignments', 'Assignments', 'file'], ['/grades', 'Grades', 'chart'],
+    ['/timetable', 'Timetable', 'cal'], ['/exams', 'Exams', 'exam'], ['/fees', 'Fees', 'rupee'], ['/library', 'Library', 'lib'], ['/leaves', 'Leave requests', 'leave'], ['/announcements', 'Announcements', 'speaker'],
   ],
 };
+const ROLE_META: Record<Role, { label: string; icon: IconName }> = {
+  ADMIN: { label: 'Admin', icon: 'shield' }, TEACHER: { label: 'Professor', icon: 'board' }, STUDENT: { label: 'Student', icon: 'cap' }, PARENT: { label: 'Parent', icon: 'home' },
+};
 
-const initials = (name: string) => name.split(' ').filter((p) => !/^(dr|prof|mr|mrs|ms)\.?$/i.test(p)).slice(0, 2).map((p) => p[0]).join('').toUpperCase();
+/* ---------- page title ---------- */
+const PageCtx = createContext<(t: { title: string; sub?: string }) => void>(() => {});
+/** Sets the heading shown in the top bar and the document title. */
+export function usePage(title: string, sub?: string) {
+  const set = useContext(PageCtx);
+  useEffect(() => {
+    set({ title, sub });
+    document.title = `${title} | CampusOne`;
+  }, [set, title, sub]);
+}
 
-function NotificationBell() {
+/* ---------- theme ---------- */
+const isDark = () => {
+  const t = document.documentElement.dataset.theme;
+  return t ? t === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
+};
+export function ThemeButton() {
+  const [dark, setDark] = useState(false);
+  useEffect(() => setDark(isDark()), []);
+  const flip = () => {
+    const next = isDark() ? 'light' : 'dark';
+    document.documentElement.dataset.theme = next;
+    try { localStorage.setItem('campusone-theme', next); } catch { /* private mode */ }
+    setDark(next === 'dark');
+    window.dispatchEvent(new Event('campusone-theme'));
+  };
+  return <button className="icon-btn" onClick={flip} aria-label="Switch light or dark theme" title="Switch theme"><Icon name={dark ? 'sun' : 'moon'} /></button>;
+}
+
+/* ---------- notifications ---------- */
+export const DESKTOP_KEY = 'campusone_desktop';
+function Notifications() {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [data, setData] = useState<{ items: AppNotification[]; unread: number }>({ items: [], unread: 0 });
+  const seen = useRef<Set<string> | null>(null);
   const box = useRef<HTMLDivElement>(null);
 
-  const refresh = useCallback(() => api<{ items: AppNotification[]; unread: number }>('/notifications').then(setData).catch(() => {}), []);
+  const refresh = useCallback(async () => {
+    const d = await api<{ items: AppNotification[]; unread: number }>('/notifications').catch(() => null);
+    if (!d) return;
+    // Mirror new attendance warnings as desktop notifications when the student turned them on.
+    if (seen.current && localStorage.getItem(DESKTOP_KEY) === '1' && 'Notification' in window && Notification.permission === 'granted') {
+      for (const n of d.items) if (!seen.current.has(n.id) && !n.read && n.kind === 'WARN') new Notification(n.title, { body: n.body });
+    }
+    seen.current = new Set(d.items.map((n) => n.id));
+    setData(d);
+  }, []);
   useEffect(() => {
     refresh();
-    const t = setInterval(refresh, 20000);
-    return () => clearInterval(t);
+    const t = setInterval(refresh, 15000);
+    const onFocus = () => refresh();
+    window.addEventListener('campusone-refresh', onFocus);
+    return () => { clearInterval(t); window.removeEventListener('campusone-refresh', onFocus); };
   }, [refresh]);
   useEffect(() => {
     if (!open) return;
-    refresh();
     const away = (e: MouseEvent) => box.current && !box.current.contains(e.target as Node) && setOpen(false);
     const esc = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
     document.addEventListener('mousedown', away);
     document.addEventListener('keydown', esc);
     return () => { document.removeEventListener('mousedown', away); document.removeEventListener('keydown', esc); };
-  }, [open, refresh]);
+  }, [open]);
 
   const openItem = async (n: AppNotification) => {
     setOpen(false);
-    if (!n.read) { await api(`/notifications/${n.id}/read`, { method: 'POST' }).catch(() => {}); refresh(); }
+    if (!n.read) await api(`/notifications/${n.id}/read`, { method: 'POST' }).catch(() => {});
+    refresh();
     if (n.link) router.push(n.link);
   };
-  const readAll = async () => { await api('/notifications/read-all', { method: 'POST' }); refresh(); };
+  const readAll = async () => { await api('/notifications/read-all', { method: 'POST' }).catch(() => {}); refresh(); };
 
   return (
-    <div className="relative" ref={box}>
-      <button onClick={() => setOpen((o) => !o)} aria-label={`Notifications${data.unread ? `, ${data.unread} unread` : ''}`} aria-expanded={open}
-        className="relative rounded border border-line bg-surface p-2 text-ink hover:border-ink/40">
-        <Bell size={18} />
-        {data.unread > 0 && (
-          <span className="absolute -right-1.5 -top-1.5 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-bad px-1 text-[11px] font-semibold text-white">
-            {data.unread > 9 ? '9+' : data.unread}
-          </span>
-        )}
+    <div className="pop-wrap" ref={box}>
+      <button className="icon-btn" onClick={() => { setOpen((o) => !o); if (!open) refresh(); }} aria-label={`Notifications${data.unread ? `, ${data.unread} unread` : ''}`} aria-expanded={open}>
+        <Icon name="bell" />{data.unread > 0 && <i className="ping" />}
       </button>
       {open && (
-        <div className="absolute right-0 z-40 mt-2 w-[min(92vw,380px)] rounded border border-line bg-surface shadow-[0_20px_60px_-20px_rgba(20,40,45,0.45)]">
-          <div className="flex items-center justify-between border-b border-line px-4 py-3">
-            <span className="font-serif text-lg">Notifications</span>
-            <button onClick={readAll} disabled={!data.unread} className="text-sm font-medium underline disabled:no-underline disabled:opacity-40">Mark all as read</button>
-          </div>
-          <ul className="max-h-[380px] overflow-y-auto">
-            {data.items.length === 0 && <li className="px-4 py-8 text-center text-muted">You are all caught up.</li>}
-            {data.items.slice(0, 8).map((n) => (
-              <li key={n.id}>
-                <button onClick={() => openItem(n)} className="flex w-full gap-3 border-b border-line/70 px-4 py-3 text-left last:border-0 hover:bg-paper">
-                  <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${n.read ? 'bg-transparent' : 'bg-bad'}`} />
-                  <span className="min-w-0">
-                    <span className={`block text-sm ${n.read ? '' : 'font-semibold'}`}>{n.title}</span>
-                    <span className="block truncate text-sm text-muted">{n.body}</span>
-                    <span className="mt-0.5 block text-xs text-muted">{timeAgo(n.createdAt)}</span>
-                  </span>
+        <div className="pop">
+          <header className="card-h">
+            <h2>Notifications</h2>
+            {data.unread > 0 && <button className="btn sm ghost" onClick={readAll}>Mark all as read</button>}
+          </header>
+          <ul className="notifs">
+            {data.items.length === 0 && <li className="empty">You are all caught up.</li>}
+            {data.items.slice(0, 12).map((n) => (
+              <li key={n.id} className={n.read ? '' : 'unread'}>
+                <button onClick={() => openItem(n)}>
+                  <span className={`tick ${n.kind === 'WARN' ? 'w' : ''} ${n.read ? 'read' : ''}`} />
+                  <div><p><b>{n.title}</b></p><p>{n.body}</p><small>{ago(n.createdAt)}</small></div>
                 </button>
               </li>
             ))}
@@ -106,83 +132,107 @@ function NotificationBell() {
   );
 }
 
+/* ---------- attendance warning shown once per sign-in to students ---------- */
+function AttendanceWarning() {
+  const router = useRouter();
+  const [risk, setRisk] = useState<AttendanceSummary['courses'] | null>(null);
+  useEffect(() => {
+    if (sessionStorage.getItem('campusone_warned')) return;
+    sessionStorage.setItem('campusone_warned', '1');
+    api<AttendanceSummary>('/attendance/summary').then((s) => {
+      const r = s.courses.filter((c) => c.level !== 'OK').sort((a, b) => (a.level === 'DANGER' ? -1 : 1) - (b.level === 'DANGER' ? -1 : 1));
+      if (r.length) setRisk(r);
+    }).catch(() => {});
+  }, []);
+  if (!risk) return null;
+  const danger = risk.filter((x) => x.level === 'DANGER').length, warn = risk.length - danger;
+  return (
+    <Modal title="Attendance warning" onClose={() => setRisk(null)}>
+      <p style={{ marginBottom: 6 }}>
+        {danger ? `You're below the 75% minimum in ${danger} ${danger === 1 ? 'subject' : 'subjects'}` : 'You have subjects close to the 75% minimum'}
+        {danger && warn ? ` and close to it in ${warn} more` : ''}. Students under 75% may not be allowed to sit the exams.
+      </p>
+      <ul className="list">
+        {risk.map((x) => (
+          <li key={x.code}>
+            <span className={`ico ${x.level === 'DANGER' ? 'danger' : 'warn'}`}><Icon name="alert" size={16} /></span>
+            <div className="grow"><b>{x.name}: {x.pct?.toFixed(1)}%</b><small>{attNote(x)}</small></div>
+            <span className={`pill ${levelTone(x.level)} hide-s`}>{LEVEL_TEXT[x.level]}</span>
+          </li>
+        ))}
+      </ul>
+      <div className="actions" style={{ marginTop: 14 }}>
+        <button className="btn" onClick={() => setRisk(null)}>Remind me later</button>
+        <button className="btn primary" onClick={() => { setRisk(null); router.push('/attendance'); }}>Open attendance tracker</button>
+      </div>
+    </Modal>
+  );
+}
+
 export function Shell({ children }: { children: React.ReactNode }) {
   const { user, students, activeStudent, setActiveStudentId, logout } = useAuth();
   const pathname = usePathname();
-  const [drawer, setDrawer] = useState(false);
-  useEffect(() => setDrawer(false), [pathname]);
+  const router = useRouter();
+  const [page, setPage] = useState<{ title: string; sub?: string }>({ title: '' });
+  const [side, setSide] = useState(false);
+  useEffect(() => setSide(false), [pathname]);
+  useEffect(() => {
+    if (user) document.body.dataset.role = roleKey(user.role);
+  }, [user]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) { e.preventDefault(); e.key === 'ArrowLeft' ? router.back() : router.forward(); }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [router]);
   if (!user) return null;
-
-  const sidebar = (
-    <div className="flex h-full flex-col">
-      <div className="px-6 pb-6 pt-7">
-        <Link href="/dashboard" className="font-serif text-[26px] tracking-tight">CampusOne</Link>
-      </div>
-      <nav className="flex-1 px-3" aria-label="Main">
-        <ul className="space-y-0.5">
-          {NAV[user.role].map(({ href, label, icon: Icon }) => {
-            const active = pathname === href || pathname.startsWith(href + '/');
-            return (
-              <li key={href}>
-                <Link href={href} aria-current={active ? 'page' : undefined}
-                  className={`flex items-center gap-3 rounded px-3 py-2.5 text-[15px] transition-colors ${active ? 'font-semibold text-ink' : 'text-muted hover:bg-black/[0.04] hover:text-ink'}`}>
-                  <Icon size={18} />
-                  <span className={active ? 'marker' : ''}>{label}</span>
-                </Link>
-              </li>
-            );
-          })}
-        </ul>
-      </nav>
-      <div className="border-t border-line p-4">
-        <div className="flex items-center gap-3">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-ink text-sm font-semibold text-white">{initials(user.name)}</div>
-          <div className="min-w-0">
-            <p className="truncate text-sm font-semibold">{user.name}</p>
-            <p className="text-xs text-muted">{roleLabel(user.role)}</p>
-          </div>
-        </div>
-        <button onClick={logout} className="btn-quiet mt-3 w-full"><LogOut size={16} /> Sign out</button>
-      </div>
-    </div>
-  );
+  const meta = ROLE_META[user.role];
 
   return (
-    <div className="min-h-screen">
-      <aside className="fixed inset-y-0 left-0 z-30 hidden w-60 border-r border-line bg-paper lg:block">{sidebar}</aside>
-
-      {drawer && (
-        <div className="fixed inset-0 z-40 lg:hidden">
-          <div className="absolute inset-0 bg-ink/40" onClick={() => setDrawer(false)} />
-          <aside className="absolute inset-y-0 left-0 w-64 bg-paper shadow-xl">
-            <button aria-label="Close menu" onClick={() => setDrawer(false)} className="absolute right-3 top-4 rounded p-1 text-muted"><X size={20} /></button>
-            {sidebar}
-          </aside>
-        </div>
-      )}
-
-      <div className="lg:pl-60">
-        <header className="sticky top-0 z-20 flex items-center justify-between gap-3 border-b border-line bg-paper/90 px-4 py-3 backdrop-blur sm:px-8">
-          <div className="flex min-w-0 items-center gap-3">
-            <button className="rounded border border-line bg-surface p-2 lg:hidden" aria-label="Open menu" onClick={() => setDrawer(true)}><Menu size={18} /></button>
-            {user.role === 'PARENT' && activeStudent && (
-              students.length > 1 ? (
-                <label className="flex items-center gap-2 text-sm">
-                  <span className="text-muted">Viewing</span>
-                  <select className="field !w-auto !py-1.5" value={activeStudent.id} onChange={(e) => setActiveStudentId(e.target.value)} aria-label="Choose child">
-                    {students.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-                  </select>
-                </label>
-              ) : (
-                <p className="truncate text-sm text-muted">Viewing <span className="font-semibold text-ink">{activeStudent.name}</span> · {activeStudent.classroom}</p>
-              )
-            )}
-            {user.role === 'STUDENT' && activeStudent && <p className="truncate text-sm text-muted">{activeStudent.classroom} · Roll {activeStudent.rollNo}</p>}
+    <PageCtx.Provider value={setPage}>
+      <div className="app">
+        <aside className={`side ${side ? 'open' : ''}`} aria-label="Main navigation">
+          <div className="brand"><Logo /><span>CampusOne</span></div>
+          <div className="role-tag"><Icon name={meta.icon} size={16} />{meta.label} workspace</div>
+          <nav>
+            {NAV[user.role].map((item) => item[0] === '#'
+              ? <div key={item[1]} className="nav-g">{item[1]}</div>
+              : (
+                <Link key={item[0]} href={item[0]} className={`nav ${pathname === item[0] ? 'on' : ''}`} aria-current={pathname === item[0] ? 'page' : undefined}>
+                  <Icon name={item[2] as IconName} /><span>{item[1]}</span>
+                </Link>
+              ))}
+          </nav>
+          <div className="me">
+            <Avatar name={user.name} />
+            <div><b>{user.name}</b><small>{user.title}</small></div>
+            <button className="icon-btn sm" onClick={logout} aria-label="Sign out" title="Sign out"><Icon name="logout" /></button>
           </div>
-          <NotificationBell />
-        </header>
-        <main className="mx-auto max-w-5xl px-4 py-8 sm:px-8 sm:py-10">{children}</main>
+        </aside>
+        <div className={`scrim ${side ? 'show' : ''}`} onClick={() => setSide(false)} />
+        <div className="main">
+          <header className="top">
+            <button className="icon-btn only-m" onClick={() => setSide(true)} aria-label="Open menu"><Icon name="menu" /></button>
+            <div className="hist">
+              <button className="icon-btn" onClick={() => router.back()} aria-label="Back" title="Back (Alt + Left)"><Icon name="left" /></button>
+              <button className="icon-btn" onClick={() => router.forward()} aria-label="Forward" title="Forward (Alt + Right)"><Icon name="right" /></button>
+            </div>
+            <div className="crumb"><h1>{page.title}</h1>{page.sub && <p>{page.sub}</p>}</div>
+            <div className="top-actions">
+              {user.role === 'PARENT' && students.length > 1 && activeStudent && (
+                <select value={activeStudent.id} onChange={(e) => setActiveStudentId(e.target.value)} aria-label="Choose child">
+                  {students.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+              )}
+              <ThemeButton />
+              <Notifications />
+            </div>
+          </header>
+          <main className="content"><div className="wrap">{children}</div></main>
+        </div>
       </div>
-    </div>
+      {user.role === 'STUDENT' && <AttendanceWarning />}
+    </PageCtx.Provider>
   );
 }

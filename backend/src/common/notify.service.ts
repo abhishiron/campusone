@@ -9,11 +9,11 @@ import { PrismaService } from '../prisma.service';
 export class NotifyService {
   constructor(private prisma: PrismaService) {}
 
-  async send(userIds: (string | null | undefined)[], n: { title: string; body: string; link?: string }) {
+  async send(userIds: (string | null | undefined)[], n: { title: string; body: string; link?: string; kind?: 'INFO' | 'WARN' }) {
     const ids = [...new Set(userIds.filter((x): x is string => !!x))];
     if (!ids.length) return;
     await this.prisma.notification.createMany({
-      data: ids.map((userId) => ({ userId, title: n.title, body: n.body, link: n.link ?? null })),
+      data: ids.map((userId) => ({ userId, title: n.title, body: n.body, link: n.link ?? null, kind: n.kind ?? 'INFO' })),
     });
   }
 }

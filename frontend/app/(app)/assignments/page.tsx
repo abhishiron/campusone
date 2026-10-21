@@ -1,276 +1,244 @@
 'use client';
-import { Suspense, useEffect, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
-import { Plus } from 'lucide-react';
+import { useEffect, useState } from 'react';
 import { useAuth } from '@/lib/auth';
-import { api, ApiError } from '@/lib/api';
-import { useFetch } from '@/lib/hooks';
-import { fmtDateTime, fmtShort, localInputValue, relativeDay } from '@/lib/format';
-import { Badge, Empty, ErrorNote, Field, Modal, PageHeader, Panel, Segmented, Spinner, SubmitButton, useToast } from '@/components/ui';
-import type { Assignment, Course, Submission, SubmissionsPayload } from '@/lib/types';
+import { api, upload } from '@/lib/api';
+import { useFetch, useStudentQuery } from '@/lib/hooks';
+import { addDaysISO, daysLeft, dueText, fmtDate, fmtLong, fmtSize, todayISO } from '@/lib/format';
+import { usePage } from '@/components/Shell';
+import { Icon } from '@/components/Icon';
+import { Async, Attachments, Avatar, DropZone, Empty, Loading, Modal, Panel, Pill, Track, useAction } from '@/components/ui';
+import type { Assignment, Course, Submission } from '@/lib/types';
 
-/* ================= Teacher ================= */
+const MAX_FILES = 5, MAX_MB = 20;
 
-function NewAssignmentModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
-  const toast = useToast();
-  const { data: courses } = useFetch<Course[]>('/courses');
-  const [courseId, setCourseId] = useState('');
-  const [title, setTitle] = useState('');
-  const [description, setDescription] = useState('');
-  const [due, setDue] = useState(() => { const d = new Date(Date.now() + 7 * 86400000); d.setHours(23, 59, 0, 0); return localInputValue(d); });
-  const [maxMarks, setMaxMarks] = useState('20');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-  useEffect(() => { if (courses?.length && !courseId) setCourseId(courses[0].id); }, [courses, courseId]);
-
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault(); setBusy(true); setError('');
-    try {
-      await api('/assignments', { method: 'POST', body: { courseId, title, description, dueDate: new Date(due).toISOString(), maxMarks: Number(maxMarks) } });
-      toast('Assignment published. Students and parents were notified.');
-      onCreated(); onClose();
-    } catch (err) { setError(err instanceof ApiError ? err.message : 'Could not create the assignment.'); setBusy(false); }
+/* ---------------- professor ---------------- */
+function CreateModal({ courses, onClose, onDone }: { courses: Course[]; onClose: () => void; onDone: () => void }) {
+  const { busy, run } = useAction();
+  const [files, setFiles] = useState<File[]>([]);
+  const [err, setErr] = useState('');
+  const add = (list: File[]) => {
+    const skipped: string[] = [];
+    const next = [...files];
+    for (const f of list) {
+      if (f.size > MAX_MB * 1048576) { skipped.push(`${f.name} is over ${MAX_MB} MB`); continue; }
+      if (next.some((x) => x.name === f.name && x.size === f.size)) continue;
+      if (next.length >= MAX_FILES) { skipped.push(`only ${MAX_FILES} files can be attached`); break; }
+      next.push(f);
+    }
+    setFiles(next);
+    setErr(skipped.length ? `Some files were not added: ${skipped.join('; ')}.` : '');
   };
-
+  const submit = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const form = new FormData(e.currentTarget);
+    files.forEach((f) => form.append('files', f));
+    const ok = await run(() => upload('/assignments', form), files.length ? `Assignment created with ${files.length} ${files.length === 1 ? 'file' : 'files'}` : 'Assignment created');
+    if (ok) onDone();
+  };
   return (
-    <Modal title="New assignment" onClose={onClose}>
-      <form className="space-y-4" onSubmit={submit}>
-        <Field label="Course">
-          <select className="field" value={courseId} onChange={(e) => setCourseId(e.target.value)} required>
-            {courses?.map((c) => <option key={c.id} value={c.id}>{c.code} · {c.name}</option>)}
-          </select>
-        </Field>
-        <Field label="Title"><input className="field" value={title} onChange={(e) => setTitle(e.target.value)} required minLength={3} placeholder="e.g. Stack and queue implementation" /></Field>
-        <Field label="Instructions"><textarea className="field min-h-[110px]" value={description} onChange={(e) => setDescription(e.target.value)} required minLength={3} placeholder="What should students submit?" /></Field>
-        <div className="grid grid-cols-2 gap-4">
-          <Field label="Due"><input type="datetime-local" className="field" value={due} onChange={(e) => setDue(e.target.value)} required /></Field>
-          <Field label="Maximum marks"><input type="number" min={1} max={1000} className="field" value={maxMarks} onChange={(e) => setMaxMarks(e.target.value)} required /></Field>
+    <Modal title="Create assignment" onClose={onClose}>
+      <form onSubmit={submit}>
+        <label className="field"><span>Title</span><input name="title" required maxLength={100} placeholder="e.g. Write SQL queries for the library schema" /></label>
+        <label className="field"><span>Course</span><select name="courseId">{courses.map((c) => <option key={c.id} value={c.id}>{c.code}, {c.name}</option>)}</select></label>
+        <div className="row2">
+          <label className="field"><span>Due date</span><input name="due" type="date" required min={todayISO()} defaultValue={addDaysISO(7)} /></label>
+          <label className="field"><span>Maximum marks</span><input name="maxMarks" type="number" min={1} max={100} defaultValue={10} required /></label>
         </div>
-        {error && <p role="alert" className="text-sm text-bad">{error}</p>}
-        <div className="flex justify-end gap-2 pt-1">
-          <button type="button" className="btn-quiet" onClick={onClose}>Cancel</button>
-          <SubmitButton type="submit" busy={busy}>Publish assignment</SubmitButton>
-        </div>
+        <label className="field"><span>Instructions (optional)</span><textarea name="description" rows={3} maxLength={2000} /></label>
+        <DropZone label={files.length ? `${files.length} of ${MAX_FILES} files attached. Add more` : 'Drag files here or click to browse'} chosen={files.length ? `${files.length} of ${MAX_FILES} files attached. Add more` : undefined}
+          hint={`PDF, DOCX, PPTX, ZIP, SQL or image, up to ${MAX_FILES} files, ${MAX_MB} MB each`} accept=".pdf,.zip,.docx,.pptx,.png,.jpg,.jpeg,.txt,.sql" multiple onFiles={add} />
+        {files.length > 0 && (
+          <ul className="files">
+            {files.map((f, i) => (
+              <li key={f.name + f.size}><Icon name="file" size={16} /><span>{f.name}</span><small>{fmtSize(f.size)}</small>
+                <button type="button" className="icon-btn sm" onClick={() => setFiles(files.filter((_, j) => j !== i))} aria-label={`Remove ${f.name}`}><Icon name="x" size={14} /></button></li>
+            ))}
+          </ul>
+        )}
+        <p className="err" role="alert">{err}</p>
+        <div className="actions"><button type="button" className="btn" onClick={onClose}>Cancel</button><button className="btn primary" disabled={busy}>{busy ? 'Uploading…' : 'Create assignment'}</button></div>
       </form>
     </Modal>
   );
 }
 
-function GradeRow({ row, max, onSaved }: { row: SubmissionsPayload['rows'][number]; max: number; onSaved: () => void }) {
-  const toast = useToast();
-  const s = row.submission;
-  const [marks, setMarks] = useState(s?.marks?.toString() ?? '');
-  const [feedback, setFeedback] = useState(s?.feedback ?? '');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
+interface SubsPayload { assignment: { id: string; title: string; dueDate: string; maxMarks: number; course: { code: string; name: string } }; rows: { studentId: string; name: string; rollNo: string; submission: Submission | null }[] }
 
-  const save = async () => {
-    if (!s) return;
-    setBusy(true); setError('');
-    try {
-      await api(`/submissions/${s.id}/grade`, { method: 'POST', body: { marks: Number(marks), feedback } });
-      toast(`Grade saved for ${row.name}.`);
-      onSaved();
-    } catch (e) { setError(e instanceof ApiError ? e.message : 'Could not save the grade.'); }
-    finally { setBusy(false); }
-  };
-
+function GradeRow({ row, max, onSaved }: { row: SubsPayload['rows'][number]; max: number; onSaved: () => void }) {
+  const s = row.submission!;
+  const [marks, setMarks] = useState(s.marks?.toString() ?? '');
+  const [fb, setFb] = useState(s.feedback ?? '');
+  const { busy, run } = useAction();
+  const save = () => run(() => api(`/submissions/${s.id}/grade`, { method: 'POST', body: { marks: Number(marks), feedback: fb } }), `Graded ${row.name.split(' ')[0]}`).then((r) => r && onSaved());
   return (
-    <li className="px-5 py-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div><p className="font-medium">{row.name}</p><p className="text-sm text-muted">{row.rollNo}</p></div>
-        {!s ? <Badge>Not submitted</Badge> : s.gradedAt ? <Badge tone="ok">Graded {s.marks}/{max}</Badge> : <Badge tone="warn">Needs grading</Badge>}
-      </div>
-      {s && (
-        <div className="mt-3 space-y-3">
-          <p className="whitespace-pre-wrap rounded border border-line bg-paper px-3 py-2.5 text-sm">{s.content}</p>
-          <p className="text-xs text-muted">Submitted {fmtDateTime(s.submittedAt)}</p>
-          <div className="grid gap-3 sm:grid-cols-[110px_1fr_auto] sm:items-end">
-            <Field label={`Marks (of ${max})`}><input type="number" min={0} max={max} className="field" value={marks} onChange={(e) => setMarks(e.target.value)} /></Field>
-            <Field label="Feedback"><input className="field" value={feedback} onChange={(e) => setFeedback(e.target.value)} placeholder="Optional comment for the student" /></Field>
-            <SubmitButton busy={busy} disabled={marks === ''} onClick={save}>{s.gradedAt ? 'Update grade' : 'Save grade'}</SubmitButton>
-          </div>
-          {error && <p role="alert" className="text-sm text-bad">{error}</p>}
-        </div>
-      )}
-    </li>
+    <>
+      <td><input className="gm" type="number" min={0} max={max} value={marks} onChange={(e) => setMarks(e.target.value)} aria-label={`Marks for ${row.name}`} /></td>
+      <td><input value={fb} onChange={(e) => setFb(e.target.value)} placeholder="Feedback (optional)" aria-label={`Feedback for ${row.name}`} style={{ padding: '7px 10px', fontSize: 13.5 }} /></td>
+      <td className="r"><button className="btn sm" disabled={busy || marks === ''} onClick={save}>{s.gradedAt ? 'Update' : 'Grade'}</button></td>
+    </>
   );
 }
 
-function ReviewModal({ id, onClose, onChanged }: { id: string; onClose: () => void; onChanged: () => void }) {
-  const { data, loading, error, reload } = useFetch<SubmissionsPayload>(`/assignments/${id}/submissions`);
+function SubmissionsModal({ id, onClose }: { id: string; onClose: () => void }) {
+  const state = useFetch<SubsPayload>(`/assignments/${id}/submissions`);
   return (
-    <Modal title={data ? data.assignment.title : 'Submissions'} onClose={onClose} wide>
-      {loading ? <Spinner /> : error || !data ? <ErrorNote message={error || 'Could not load submissions.'} onRetry={reload} /> : (
-        <>
-          <p className="mb-4 text-sm text-muted">{data.assignment.course.code} · {data.assignment.course.name} · due {fmtDateTime(data.assignment.dueDate)} · {data.assignment.maxMarks} marks</p>
-          <ul className="divide-y divide-line rounded border border-line">
-            {data.rows.map((r) => <GradeRow key={r.studentId + (r.submission?.gradedAt ?? '')} row={r} max={data.assignment.maxMarks} onSaved={() => { reload(); onChanged(); }} />)}
-          </ul>
-        </>
-      )}
+    <Modal title={state.data?.assignment.title ?? 'Submissions'} onClose={onClose} wide>
+      <Async state={state}>
+        {(d) => {
+          const subs = d.rows.filter((r) => r.submission);
+          return (
+            <>
+              <div className="asg-meta"><b>{d.assignment.course.code}, {d.assignment.course.name}</b><small>Due {fmtLong(d.assignment.dueDate)}, {d.assignment.maxMarks} marks. {subs.length} of {d.rows.length} submitted, {subs.filter((r) => r.submission!.gradedAt).length} graded.</small></div>
+              <div className="tbl-wrap">
+                <table className="tbl sm">
+                  <thead><tr><th>Student</th><th>Submission</th><th>Marks</th><th>Feedback</th><th className="r"><span className="sr">Save</span></th></tr></thead>
+                  <tbody>
+                    {d.rows.map((r) => (
+                      <tr key={r.studentId}>
+                        <td><div className="who"><Avatar name={r.name} /><div><b>{r.name}</b><small className="mono">{r.rollNo}</small></div></div></td>
+                        {r.submission ? (
+                          <>
+                            <td><Attachments files={[r.submission.file]} />{r.submission.note && <div className="hint">{r.submission.note}</div>}<div className="hint">{fmtDate(r.submission.submittedAt)}</div></td>
+                            <GradeRow row={r} max={d.assignment.maxMarks} onSaved={state.reload} />
+                          </>
+                        ) : <td colSpan={4}><span className="hint">Not submitted</span></td>}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          );
+        }}
+      </Async>
     </Modal>
   );
 }
 
-function TeacherView() {
-  const params = useSearchParams();
-  const { data, loading, error, reload } = useFetch<Assignment[]>('/assignments');
+function TeacherAssignments() {
+  usePage('Assignments', 'Create work, track submissions and grade');
+  const state = useFetch<Assignment[]>('/assignments');
+  const courses = useFetch<Course[]>('/courses');
   const [creating, setCreating] = useState(false);
-  const [reviewId, setReviewId] = useState<string | null>(params.get('open'));
-
+  const [open, setOpen] = useState<string | null>(null);
   return (
     <>
-      <PageHeader title="Assignments" subtitle="Publish work, then review and grade submissions."
-        action={<button className="btn-primary" onClick={() => setCreating(true)}><Plus size={16} /> New assignment</button>} />
-      <Panel>
-        {loading ? <Spinner /> : error ? <div className="p-5"><ErrorNote message={error} onRetry={reload} /></div> : !data?.length ? (
-          <Empty title="No assignments yet" hint="Publish your first assignment and students will be notified." action={<button className="btn-primary" onClick={() => setCreating(true)}>New assignment</button>} />
-        ) : (
-          <ul className="divide-y divide-line">
-            {data.map((a) => {
-              const waiting = (a.submittedCount ?? 0) - (a.gradedCount ?? 0);
-              return (
-                <li key={a.id} className="flex flex-wrap items-center justify-between gap-3 px-5 py-4">
-                  <div className="min-w-0">
-                    <p className="font-medium">{a.title}</p>
-                    <p className="text-sm text-muted">{a.course.code} · due {fmtShort(a.dueDate)} · {a.submittedCount}/{a.classSize} submitted · {a.gradedCount} graded</p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {waiting > 0 && <Badge tone="warn">{waiting} to grade</Badge>}
-                    <button className="btn-quiet" onClick={() => setReviewId(a.id)}>Review submissions</button>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        )}
+      <Panel title="Your assignments" flush extra={<button className="btn primary sm" onClick={() => setCreating(true)}><Icon name="plus" size={16} />Create assignment</button>}>
+        <Async state={state}>
+          {(list) => list.length ? (
+            <div className="tbl-wrap">
+              <table className="tbl">
+                <thead><tr><th>Assignment</th><th>Due</th><th>Submissions</th><th>Max marks</th></tr></thead>
+                <tbody>
+                  {list.map((a) => {
+                    const d = daysLeft(a.dueDate);
+                    return (
+                      <tr key={a.id} className="click" onClick={(e) => { if (!(e.target as HTMLElement).closest('button')) setOpen(a.id); }}>
+                        <td><b>{a.title}</b><div className="hint">{a.course.code}, {a.course.name}</div><Attachments files={a.files} /></td>
+                        <td>{fmtDate(a.dueDate)} <Pill tone={d < 0 ? '' : d <= 3 ? 'warn' : 'acc'}>{d < 0 ? 'Closed' : d === 0 ? 'Today' : `${d} days left`}</Pill></td>
+                        <td style={{ minWidth: 170 }}><Track pct={a.classSize ? (a.submittedCount! / a.classSize) * 100 : 0} /><span className="hint">{a.submittedCount} of {a.classSize}, {a.gradedCount} graded</span></td>
+                        <td>{a.maxMarks}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : <Empty>No assignments yet. Create the first one.</Empty>}
+        </Async>
       </Panel>
-      {creating && <NewAssignmentModal onClose={() => setCreating(false)} onCreated={reload} />}
-      {reviewId && <ReviewModal id={reviewId} onClose={() => setReviewId(null)} onChanged={reload} />}
+      <p className="hint" style={{ marginTop: 10 }}>Select an assignment to see submissions and grade them.</p>
+      {creating && <CreateModal courses={courses.data ?? []} onClose={() => setCreating(false)} onDone={() => { setCreating(false); state.reload(); }} />}
+      {open && <SubmissionsModal id={open} onClose={() => { setOpen(null); state.reload(); }} />}
     </>
   );
 }
 
-/* ================= Student / Parent ================= */
-
-type State = { label: string; tone: 'neutral' | 'ok' | 'bad' | 'warn' };
-function stateOf(a: Assignment): State {
-  const s = a.submission;
-  if (s?.gradedAt) return { label: `Graded ${s.marks}/${a.maxMarks}`, tone: 'ok' };
-  if (s) return { label: 'Submitted', tone: 'neutral' };
-  if (new Date(a.dueDate) < new Date()) return { label: 'Overdue', tone: 'bad' };
-  return { label: `Due ${relativeDay(a.dueDate)}`, tone: 'warn' };
+/* ---------------- student and parent ---------------- */
+function status(a: Assignment) {
+  const s = a.submission, d = daysLeft(a.dueDate), closed = new Date(a.dueDate) < new Date();
+  if (s?.gradedAt) return { tone: 'ok' as const, text: `Graded ${s.marks}/${a.maxMarks}`, done: true };
+  if (s) return { tone: 'ok' as const, text: 'Submitted', done: closed };
+  if (closed) return { tone: 'bad' as const, text: 'Missed', done: true };
+  return { tone: d <= 3 ? ('warn' as const) : ('acc' as const), text: dueText(a.dueDate), done: false };
 }
 
-function DetailModal({ a, canSubmit, onClose, onSaved }: { a: Assignment; canSubmit: boolean; onClose: () => void; onSaved: () => void }) {
-  const toast = useToast();
-  const s: Submission | null | undefined = a.submission;
-  const [content, setContent] = useState(s?.content ?? '');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-  const locked = !!s?.gradedAt;
-
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault(); setBusy(true); setError('');
-    try {
-      await api(`/assignments/${a.id}/submit`, { method: 'POST', body: { content } });
-      toast(s ? 'Submission updated.' : 'Assignment submitted.');
-      onSaved(); onClose();
-    } catch (err) { setError(err instanceof ApiError ? err.message : 'Could not submit.'); setBusy(false); }
+function SubmitModal({ a, onClose, onDone }: { a: Assignment; onClose: () => void; onDone: () => void }) {
+  const { busy, run } = useAction();
+  const [file, setFile] = useState<File | null>(null);
+  const [err, setErr] = useState('');
+  const submit = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!file) return setErr('Choose a file to submit.');
+    const form = new FormData();
+    form.append('file', file);
+    form.append('note', String(new FormData(e.currentTarget).get('note') ?? ''));
+    const ok = await run(() => upload(`/assignments/${a.id}/submit`, form), a.submission ? 'Submission updated' : 'Assignment submitted');
+    if (ok) onDone();
   };
-
   return (
-    <Modal title={a.title} onClose={onClose}>
-      <p className="mb-1 text-sm text-muted">{a.course.code} · {a.course.name}</p>
-      <p className="mb-4 text-sm text-muted">Due {fmtDateTime(a.dueDate)} · {a.maxMarks} marks</p>
-      <p className="mb-5 whitespace-pre-wrap">{a.description}</p>
-
-      {locked && s && (
-        <div className="mb-4 rounded border border-ok/30 bg-ok/5 p-4">
-          <p className="font-serif text-2xl text-ok">{s.marks}/{a.maxMarks}</p>
-          {s.feedback && <p className="mt-1 text-sm">{s.feedback}</p>}
-        </div>
-      )}
-
-      {canSubmit && !locked ? (
-        <form onSubmit={submit} className="space-y-3">
-          <Field label={s ? 'Your submission' : 'Your answer'} hint={s ? `Last submitted ${fmtDateTime(s.submittedAt)}. You can update it until it is graded.` : undefined}>
-            <textarea className="field min-h-[150px]" value={content} onChange={(e) => setContent(e.target.value)} required placeholder="Write your answer or paste a link to your work" />
-          </Field>
-          {error && <p role="alert" className="text-sm text-bad">{error}</p>}
-          <div className="flex justify-end gap-2">
-            <button type="button" className="btn-quiet" onClick={onClose}>Close</button>
-            <SubmitButton type="submit" busy={busy}>{s ? 'Update submission' : 'Submit assignment'}</SubmitButton>
-          </div>
-        </form>
-      ) : (
-        <>
-          {s ? (
-            <div>
-              <p className="mb-1.5 text-sm font-medium">Submission</p>
-              <p className="whitespace-pre-wrap rounded border border-line bg-paper px-3 py-2.5 text-sm">{s.content}</p>
-              <p className="mt-1.5 text-xs text-muted">Submitted {fmtDateTime(s.submittedAt)}{new Date(s.submittedAt) > new Date(a.dueDate) && ' · after the due date'}</p>
-            </div>
-          ) : <p className="text-sm text-muted">Nothing has been submitted yet.</p>}
-          <div className="mt-5 flex justify-end"><button className="btn-quiet" onClick={onClose}>Close</button></div>
-        </>
-      )}
+    <Modal title={a.submission ? 'Update submission' : 'Submit assignment'} onClose={onClose}>
+      <form onSubmit={submit}>
+        <div className="asg-meta"><b>{a.title}</b><small>{a.course.code}, {a.course.name}. Due {fmtDate(a.dueDate)}, {a.maxMarks} marks</small></div>
+        <DropZone label="Choose a file or drop it here" chosen={file?.name} hint="PDF, DOCX, ZIP or image, up to 20 MB" accept=".pdf,.zip,.docx,.png,.jpg,.jpeg" onFiles={(f) => { setFile(f[0] ?? null); setErr(''); }} />
+        <label className="field"><span>Note to your professor (optional)</span><textarea name="note" rows={3} defaultValue={a.submission?.note} /></label>
+        <p className="err" role="alert">{err}</p>
+        <div className="actions"><button type="button" className="btn" onClick={onClose}>Cancel</button><button className="btn primary" disabled={busy}>{busy ? 'Uploading…' : a.submission ? 'Replace submission' : 'Submit assignment'}</button></div>
+      </form>
     </Modal>
   );
 }
 
-function FamilyView() {
-  const { user, activeStudent } = useAuth();
-  const { data, loading, error, reload } = useFetch<Assignment[]>(activeStudent ? `/assignments?studentId=${activeStudent.id}` : null);
-  const [filter, setFilter] = useState<'todo' | 'done' | 'all'>('todo');
-  const [openId, setOpenId] = useState<string | null>(null);
-  const isParent = user?.role === 'PARENT';
-
-  const todo = data?.filter((a) => !a.submission) ?? [];
-  const done = data?.filter((a) => a.submission) ?? [];
-  const shown = filter === 'todo' ? todo : filter === 'done' ? done : data ?? [];
-  const open = data?.find((a) => a.id === openId) ?? null;
-
+function StudentAssignments({ parent }: { parent: boolean }) {
+  usePage('Assignments', parent ? 'Work set for your child and its status' : 'Submit work before the due date');
+  const { sep, ready } = useStudentQuery();
+  const state = useFetch<Assignment[]>(ready ? sep('/assignments') : null);
+  const [submitting, setSubmitting] = useState<Assignment | null>(null);
+  // Links like /assignments?submit=<id> from the overview open the submit dialog directly.
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get('submit');
+    const a = id && state.data?.find((x) => x.id === id);
+    if (a && !parent && !status(a).done) setSubmitting(a);
+  }, [state.data, parent]);
+  if (!state.data && !state.error) return <Loading />;
   return (
-    <>
-      <PageHeader title="Assignments" subtitle={isParent && activeStudent ? `Work set for ${activeStudent.name}.` : 'Open an assignment to read the instructions and submit your work.'} />
-      <div className="mb-4">
-        <Segmented label="Filter assignments" value={filter} onChange={setFilter} options={[
-          { value: 'todo', label: `To do (${todo.length})` }, { value: 'done', label: `Submitted (${done.length})` }, { value: 'all', label: 'All' },
-        ]} />
-      </div>
-      <Panel>
-        {loading ? <Spinner /> : error ? <div className="p-5"><ErrorNote message={error} onRetry={reload} /></div> : shown.length === 0 ? (
-          <Empty title={filter === 'todo' ? 'You are all caught up' : 'Nothing here yet'} hint={filter === 'todo' ? 'No pending assignments.' : undefined} />
-        ) : (
-          <ul className="divide-y divide-line">
-            {shown.map((a) => {
-              const st = stateOf(a);
-              return (
-                <li key={a.id} className="flex flex-wrap items-center justify-between gap-3 px-5 py-4">
-                  <div className="min-w-0">
-                    <p className="font-medium">{a.title}</p>
-                    <p className="text-sm text-muted">{a.course.code} · {a.course.name} · due {fmtShort(a.dueDate)}</p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Badge tone={st.tone}>{st.label}</Badge>
-                    <button className="btn-quiet !py-1.5" onClick={() => setOpenId(a.id)}>{isParent || a.submission?.gradedAt ? 'View' : a.submission ? 'Edit' : 'Open'}</button>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </Panel>
-      {open && <DetailModal key={open.id + (open.submission?.submittedAt ?? '')} a={open} canSubmit={!isParent} onClose={() => setOpenId(null)} onSaved={reload} />}
-    </>
+    <Panel title="All assignments" flush>
+      <Async state={state}>
+        {(data) => {
+          const list = [...data].sort((x, y) => {
+            const a = status(x).done, b = status(y).done;
+            return a === b ? (a ? y.dueDate.localeCompare(x.dueDate) : x.dueDate.localeCompare(y.dueDate)) : a ? 1 : -1;
+          });
+          return list.length ? (
+            <ul className="list" style={{ padding: '0 18px' }}>
+              {list.map((a) => {
+                const st = status(a), s = a.submission;
+                return (
+                  <li key={a.id}>
+                    <div className="grow">
+                      <b>{a.title}</b>
+                      <small>{a.course.code}, {a.course.name}. Due {fmtDate(a.dueDate)}, {a.maxMarks} marks{s ? `. Sent ${fmtDate(s.submittedAt)}` : ''}</small>
+                      {a.description && <div className="hint">{a.description}</div>}
+                      <Attachments files={[...a.files, s?.file]} />
+                      {s?.feedback && <div className="hint">Feedback: {s.feedback}</div>}
+                    </div>
+                    <Pill tone={st.tone}>{st.text}</Pill>
+                    {!parent && !st.done && !s?.gradedAt && <button className={`btn sm ${s ? '' : 'primary'}`} onClick={() => setSubmitting(a)}>{s ? 'Replace' : 'Submit'}</button>}
+                  </li>
+                );
+              })}
+            </ul>
+          ) : <Empty>No assignments yet.</Empty>;
+        }}
+      </Async>
+      {submitting && <SubmitModal a={submitting} onClose={() => setSubmitting(null)} onDone={() => { setSubmitting(null); state.reload(); }} />}
+    </Panel>
   );
 }
 
 export default function AssignmentsPage() {
   const { user } = useAuth();
-  if (!user) return null;
-  if (user.role === 'TEACHER' || user.role === 'ADMIN') return <Suspense fallback={<Spinner />}><TeacherView /></Suspense>;
-  return <FamilyView />;
+  if (user!.role === 'TEACHER') return <TeacherAssignments />;
+  if (user!.role === 'ADMIN') return <Empty>Assignments are managed by professors.</Empty>;
+  return <StudentAssignments parent={user!.role === 'PARENT'} />;
 }

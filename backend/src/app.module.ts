@@ -10,6 +10,7 @@ import { AssignmentsModule } from './assignments/assignments.module';
 import { AnnouncementsModule } from './announcements/announcements.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { DashboardModule } from './dashboard/dashboard.module';
+import { CampusModule } from './campus/campus.module';
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { DashboardModule } from './dashboard/dashboard.module';
     AnnouncementsModule,
     NotificationsModule,
     DashboardModule,
+    CampusModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: AuthGuard }],
 })

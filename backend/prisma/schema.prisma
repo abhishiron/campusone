@@ -1,6 +1,7 @@
 // CampusOne data model.
 // Runs on SQLite for a zero-setup demo. To move to PostgreSQL, change
 // `provider` to "postgresql", set DATABASE_URL to your Postgres URL and run `npm run db:push`.
+// SQLite has no enums, so status-like fields are strings; allowed values are listed in comments.
 
 generator client {
   provider = "prisma-client-js"
@@ -17,44 +18,102 @@ model User {
   email         String         @unique
   passwordHash  String
   role          String // ADMIN | TEACHER | STUDENT | PARENT
+  status        String         @default("ACTIVE") // ACTIVE | SUSPENDED | ON_LEAVE
+  dept          String?
+  designation   String?
   createdAt     DateTime       @default(now())
   student       Student?
   children      Student[]      @relation("ParentChildren")
   courses       Course[]
+  coordinates   Classroom[]    @relation("Coordinator")
   announcements Announcement[]
   notifications Notification[]
+  files         FileAsset[]
+  resources     Resource[]
+  votes         ResourceVote[]
+  checkWindows  CheckWindow[]
 }
 
 model Classroom {
-  id       String    @id @default(cuid())
-  name     String    @unique
-  students Student[]
-  courses  Course[]
+  id            String          @id @default(cuid())
+  name          String          @unique // e.g. IT-1
+  dept          String          @default("IT")
+  program       String          @default("B.Tech IT")
+  batch         String          @default("2023–27")
+  semester      Int             @default(5)
+  feeDue        String? // YYYY-MM-DD
+  coordinatorId String?
+  coordinator   User?           @relation("Coordinator", fields: [coordinatorId], references: [id], onDelete: SetNull)
+  students      Student[]
+  courses       Course[]
+  feeItems      FeeItem[]
+  study         StudySession[]
 }
 
 model Student {
-  id          String       @id @default(cuid())
-  userId      String       @unique
-  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  rollNo      String       @unique
-  classroomId String
-  classroom   Classroom    @relation(fields: [classroomId], references: [id])
-  parentId    String?
-  parent      User?        @relation("ParentChildren", fields: [parentId], references: [id], onDelete: SetNull)
-  attendance  Attendance[]
-  submissions Submission[]
+  id            String               @id @default(cuid())
+  userId        String               @unique
+  user          User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  rollNo        String               @unique // enrollment number
+  classroomId   String
+  classroom     Classroom            @relation(fields: [classroomId], references: [id])
+  parentId      String?
+  parent        User?                @relation("ParentChildren", fields: [parentId], references: [id], onDelete: SetNull)
+  backlogs      Int                  @default(0)
+  warnAt        Int                  @default(80) // attendance warning threshold, percent
+  alertParent   Boolean              @default(true)
+  attendance    Attendance[]
+  submissions   Submission[]
+  marks         InternalMark[]
+  results       SemesterResult[]
+  alerts        AttendanceAlert[]
+  levels        AttendanceLevel[]
+  checkIns      CheckIn[]
+  seats         ExamSeat[]
+  hosting       StudySession[]
+  rsvps         StudyRsvp[]
+  books         BookIssue[]
+  payments      Payment[]
+  leaves        LeaveRequest[]
+  certificates  CertificateRequest[]
+  registrations DriveRegistration[]
 }
 
 model Course {
-  id          String       @id @default(cuid())
-  code        String       @unique
-  name        String
-  classroomId String
-  classroom   Classroom    @relation(fields: [classroomId], references: [id])
-  teacherId   String
-  teacher     User         @relation(fields: [teacherId], references: [id])
-  attendance  Attendance[]
-  assignments Assignment[]
+  id             String          @id @default(cuid())
+  code           String          @unique
+  name           String
+  credits        Int             @default(4)
+  capacity       Int             @default(70)
+  plannedClasses Int             @default(45) // classes planned for the whole semester
+  hue            Int             @default(220) // colour used in the timetable
+  classroomId    String
+  classroom      Classroom       @relation(fields: [classroomId], references: [id])
+  teacherId      String
+  teacher        User            @relation(fields: [teacherId], references: [id])
+  slots          TimetableSlot[]
+  attendance     Attendance[]
+  assignments    Assignment[]
+  marks          InternalMark[]
+  alerts         AttendanceAlert[]
+  levels         AttendanceLevel[]
+  windows        CheckWindow[]
+  checkIns       CheckIn[]
+  exams          Exam[]
+  study          StudySession[]
+  resources      Resource[]
+  announcements  Announcement[]
+}
+
+model TimetableSlot {
+  id       String @id @default(cuid())
+  courseId String
+  course   Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  day      Int // 1 = Monday ... 5 = Friday
+  slot     Int // index into the period list (0..5)
+  room     String
+
+  @@unique([courseId, day, slot])
 }
 
 model Attendance {
@@ -65,8 +124,91 @@ model Attendance {
   course    Course  @relation(fields: [courseId], references: [id], onDelete: Cascade)
   date      String // YYYY-MM-DD
   status    String // PRESENT | ABSENT | LATE
+  source    String  @default("MANUAL") // MANUAL | CHECKIN
 
   @@unique([studentId, courseId, date])
+}
+
+/// Last known attendance level per subject, so alerts fire only when it changes.
+model AttendanceLevel {
+  studentId String
+  student   Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  courseId  String
+  course    Course  @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  level     String // OK | WARN | DANGER
+
+  @@id([studentId, courseId])
+}
+
+model AttendanceAlert {
+  id        String   @id @default(cuid())
+  studentId String
+  student   Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  courseId  String
+  course    Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  pct       Float
+  level     String // OK | WARN | DANGER
+  channels  String // comma separated, e.g. "In-app,Parent account"
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+/// Single row (id "main"): the geofence used for self check-in.
+model Campus {
+  id     String @id @default("main")
+  name   String
+  lat    Float
+  lng    Float
+  radius Int // metres
+}
+
+model CheckWindow {
+  id         String    @id @default(cuid())
+  courseId   String
+  course     Course    @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  date       String // YYYY-MM-DD
+  openedById String
+  openedBy   User      @relation(fields: [openedById], references: [id], onDelete: Cascade)
+  openedAt   DateTime  @default(now())
+  until      DateTime
+  checkIns   CheckIn[]
+}
+
+model CheckIn {
+  id        String      @id @default(cuid())
+  windowId  String
+  window    CheckWindow @relation(fields: [windowId], references: [id], onDelete: Cascade)
+  studentId String
+  student   Student     @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  courseId  String
+  course    Course      @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  date      String
+  dist      Float // metres from campus centre, computed on the server
+  acc       Float // GPS accuracy reported by the device, metres
+  method    String // LIVE | UPLOAD
+  simulated Boolean     @default(false)
+  flags     String      @default("") // newline separated review reasons
+  status    String // VERIFIED | NEEDS_REVIEW | APPROVED | REJECTED
+  photo     String // JPEG data URL, stamped on the device
+  createdAt DateTime    @default(now())
+
+  @@unique([studentId, courseId, date])
+}
+
+model FileAsset {
+  id           String         @id @default(cuid())
+  name         String
+  size         Int
+  mime         String
+  path         String // file name inside the uploads folder
+  uploaderId   String
+  uploader     User           @relation(fields: [uploaderId], references: [id], onDelete: Cascade)
+  assignmentId String? // set for files a professor attaches to an assignment
+  assignment   Assignment?    @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  createdAt    DateTime       @default(now())
+  submissions  Submission[]
+  resources    Resource[]
+  leaves       LeaveRequest[]
 }
 
 model Assignment {
@@ -78,6 +220,7 @@ model Assignment {
   dueDate     DateTime
   maxMarks    Int
   createdAt   DateTime     @default(now())
+  files       FileAsset[]
   submissions Submission[]
 }
 
@@ -87,7 +230,9 @@ model Submission {
   assignment   Assignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
   studentId    String
   student      Student    @relation(fields: [studentId], references: [id], onDelete: Cascade)
-  content      String
+  content      String     @default("") // note to the professor
+  fileId       String?
+  file         FileAsset? @relation(fields: [fileId], references: [id], onDelete: SetNull)
   submittedAt  DateTime   @default(now())
   marks        Int?
   feedback     String?
@@ -96,11 +241,187 @@ model Submission {
   @@unique([assignmentId, studentId])
 }
 
+/// Internal assessment, out of 25.
+model InternalMark {
+  studentId String
+  student   Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  courseId  String
+  course    Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  marks     Int
+  updatedAt DateTime @updatedAt
+
+  @@id([studentId, courseId])
+}
+
+model SemesterResult {
+  studentId String
+  student   Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  semester  Int
+  sgpa      Float
+  credits   Int
+
+  @@id([studentId, semester])
+}
+
+model Exam {
+  id       String     @id @default(cuid())
+  courseId String
+  course   Course     @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  date     String // YYYY-MM-DD
+  time     String // e.g. 10:00–11:30
+  syllabus String
+  room     String
+  maxMarks Int        @default(30)
+  seats    ExamSeat[]
+}
+
+model ExamSeat {
+  examId    String
+  exam      Exam    @relation(fields: [examId], references: [id], onDelete: Cascade)
+  studentId String
+  student   Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  seat      String
+
+  @@id([examId, studentId])
+}
+
+model StudySession {
+  id          String      @id @default(cuid())
+  title       String
+  description String      @default("")
+  courseId    String? // null means a general session
+  course      Course?     @relation(fields: [courseId], references: [id], onDelete: SetNull)
+  classroomId String
+  classroom   Classroom   @relation(fields: [classroomId], references: [id], onDelete: Cascade)
+  hostId      String
+  host        Student     @relation(fields: [hostId], references: [id], onDelete: Cascade)
+  start       DateTime
+  durationMin Int
+  link        String
+  capacity    Int
+  createdAt   DateTime    @default(now())
+  rsvps       StudyRsvp[]
+}
+
+model StudyRsvp {
+  sessionId String
+  session   StudySession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  studentId String
+  student   Student      @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  createdAt DateTime     @default(now())
+
+  @@id([sessionId, studentId])
+}
+
+model Resource {
+  id         String         @id @default(cuid())
+  title      String
+  type       String // NOTES | PYQ
+  courseId   String
+  course     Course         @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  uploaderId String
+  uploader   User           @relation(fields: [uploaderId], references: [id], onDelete: Cascade)
+  byLabel    String? // shown instead of the uploader's name, e.g. "Class representative"
+  fileId     String
+  file       FileAsset      @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  createdAt  DateTime       @default(now())
+  votes      ResourceVote[]
+}
+
+model ResourceVote {
+  resourceId String
+  resource   Resource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([resourceId, userId])
+}
+
+model BookIssue {
+  id        String  @id @default(cuid())
+  studentId String
+  student   Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  title     String
+  author    String
+  issuedOn  String // YYYY-MM-DD
+  dueOn     String
+  renewals  Int     @default(0)
+}
+
+model FeeItem {
+  id          String    @id @default(cuid())
+  classroomId String
+  classroom   Classroom @relation(fields: [classroomId], references: [id], onDelete: Cascade)
+  label       String
+  amount      Int // rupees
+}
+
+model Payment {
+  id        String   @id @default(cuid())
+  studentId String
+  student   Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  txn       String   @unique
+  amount    Int
+  method    String
+  paidBy    String // name of the person who paid
+  createdAt DateTime @default(now())
+}
+
+model LeaveRequest {
+  id          String     @id @default(cuid())
+  studentId   String
+  student     Student    @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  type        String
+  from        String // YYYY-MM-DD
+  to          String
+  reason      String
+  fileId      String?
+  file        FileAsset? @relation(fields: [fileId], references: [id], onDelete: SetNull)
+  status      String     @default("PENDING") // PENDING | APPROVED | REJECTED
+  decidedBy   String?
+  createdAt   DateTime   @default(now())
+}
+
+model CertificateRequest {
+  id        String   @id @default(cuid())
+  studentId String
+  student   Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  type      String
+  purpose   String
+  status    String   @default("PROCESSING") // PROCESSING | READY
+  createdAt DateTime @default(now())
+}
+
+model Drive {
+  id            String              @id @default(cuid())
+  company       String
+  role          String
+  pkg           String
+  type          String
+  minCgpa       Float
+  maxBacklogs   Int
+  deadline      String // YYYY-MM-DD, last day to register
+  registrations DriveRegistration[]
+}
+
+model DriveRegistration {
+  driveId   String
+  drive     Drive    @relation(fields: [driveId], references: [id], onDelete: Cascade)
+  studentId String
+  student   Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@id([driveId, studentId])
+}
+
 model Announcement {
   id        String   @id @default(cuid())
   title     String
   body      String
-  audience  String // ALL | STUDENT | PARENT | TEACHER
+  audience  String // ALL | STUDENT | PARENT | TEACHER | COURSE
+  courseId  String? // set when audience is COURSE
+  course    Course?  @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  byLabel   String? // e.g. "Examination Cell"; falls back to the author's name
   authorId  String
   author    User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
   createdAt DateTime @default(now())
@@ -113,6 +434,14 @@ model Notification {
   title     String
   body      String
   link      String?
+  kind      String   @default("INFO") // INFO | WARN (attendance alerts)
   read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+/// Audit trail shown on the admin overview.
+model Activity {
+  id        String   @id @default(cuid())
+  text      String
   createdAt DateTime @default(now())
 }

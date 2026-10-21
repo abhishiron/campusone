@@ -1,20 +1,31 @@
-import { Body, Controller, Delete, ForbiddenException, Get, NotFoundException, Param, Post } from '@nestjs/common';
-import { IsIn, IsString, MinLength } from 'class-validator';
+import { BadRequestException, Body, Controller, Delete, ForbiddenException, Get, NotFoundException, Param, Post } from '@nestjs/common';
+import { IsString, MaxLength, MinLength } from 'class-validator';
 import { PrismaService } from '../prisma.service';
 import { NotifyService } from '../common/notify.service';
+import { ActivityService } from '../common/activity.service';
+import { AccessService } from '../common/access.service';
 import { CurrentUser, Roles } from '../common/decorators';
 import { AuthUser } from '../common/types';
 import { AnnouncementsService } from './announcements.service';
 
+const ADMIN_AUDIENCES = ['ALL', 'STUDENT', 'TEACHER', 'PARENT'];
+
 class CreateAnnouncementDto {
-  @IsString() @MinLength(3, { message: 'Give the announcement a title.' }) title: string;
+  @IsString() @MinLength(3, { message: 'Give the announcement a title.' }) @MaxLength(90) title: string;
   @IsString() @MinLength(3, { message: 'Write the announcement.' }) body: string;
-  @IsIn(['ALL', 'STUDENT', 'PARENT', 'TEACHER'], { message: 'Choose who should see this.' }) audience: 'ALL' | 'STUDENT' | 'PARENT' | 'TEACHER';
+  /** ALL | STUDENT | TEACHER | PARENT for admins, or a course id for professors. */
+  @IsString() audience: string;
 }
 
 @Controller('announcements')
 export class AnnouncementsController {
-  constructor(private prisma: PrismaService, private notify: NotifyService, private service: AnnouncementsService) {}
+  constructor(
+    private prisma: PrismaService,
+    private notify: NotifyService,
+    private activity: ActivityService,
+    private access: AccessService,
+    private service: AnnouncementsService,
+  ) {}
 
   @Get()
   list(@CurrentUser() user: AuthUser) {
@@ -24,14 +35,20 @@ export class AnnouncementsController {
   @Post()
   @Roles('ADMIN', 'TEACHER')
   async create(@CurrentUser() user: AuthUser, @Body() dto: CreateAnnouncementDto) {
-    const a = await this.prisma.announcement.create({
-      data: { title: dto.title.trim(), body: dto.body.trim(), audience: dto.audience, authorId: user.id },
-    });
-    const recipients = await this.prisma.user.findMany({
-      where: { id: { not: user.id }, ...(dto.audience === 'ALL' ? {} : { role: dto.audience }) },
-      select: { id: true },
-    });
-    await this.notify.send(recipients.map((r) => r.id), { title: a.title, body: `New announcement from ${user.name}.`, link: '/announcements' });
+    const base = { title: dto.title.trim(), body: dto.body.trim(), authorId: user.id };
+    let recipients: (string | null)[];
+    let a;
+    if (user.role === 'ADMIN') {
+      if (!ADMIN_AUDIENCES.includes(dto.audience)) throw new BadRequestException('Choose who should see this.');
+      a = await this.prisma.announcement.create({ data: { ...base, audience: dto.audience } });
+      recipients = (await this.prisma.user.findMany({ where: { id: { not: user.id }, ...(dto.audience === 'ALL' ? {} : { role: dto.audience }) }, select: { id: true } })).map((r) => r.id);
+    } else {
+      const course = await this.access.assertCanManageCourse(user, dto.audience);
+      a = await this.prisma.announcement.create({ data: { ...base, audience: 'COURSE', courseId: course.id } });
+      recipients = (await this.prisma.student.findMany({ where: { classroomId: course.classroomId } })).flatMap((s) => [s.userId, s.parentId]);
+    }
+    await this.notify.send(recipients, { title: a.title, body: `New announcement from ${user.name}.`, link: '/announcements' });
+    await this.activity.log(`${user.name} posted "${a.title}"`);
     return a;
   }
 

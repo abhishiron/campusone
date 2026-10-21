@@ -1,90 +1,98 @@
-import { Controller, Get, Query } from '@nestjs/common';
+import { Controller, Get } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
-import { AccessService } from '../common/access.service';
-import { CurrentUser } from '../common/decorators';
+import { CurrentUser, Roles } from '../common/decorators';
 import { AuthUser } from '../common/types';
-import { AnnouncementsService } from '../announcements/announcements.service';
 import { AttendanceService } from '../attendance/attendance.service';
+import { PERIODS, addDays, parseISO, plusHour, today } from '../common/dates';
 
-const today = () => new Date().toLocaleDateString('en-CA');
+const pctOf = (rows: { status: string; _count: number }[]) => {
+  const total = rows.reduce((n, r) => n + r._count, 0);
+  return total ? (rows.filter((r) => r.status !== 'ABSENT').reduce((n, r) => n + r._count, 0) / total) * 100 : null;
+};
 
+/** Overviews for staff. Students and parents compose theirs from the feature endpoints. */
 @Controller('dashboard')
+@Roles('ADMIN', 'TEACHER')
 export class DashboardController {
-  constructor(
-    private prisma: PrismaService,
-    private access: AccessService,
-    private announcements: AnnouncementsService,
-    private attendance: AttendanceService,
-  ) {}
+  constructor(private prisma: PrismaService, private attendance: AttendanceService) {}
 
   @Get()
-  async get(@CurrentUser() user: AuthUser, @Query('studentId') studentId?: string) {
-    const latestAnnouncements = await this.announcements.visibleTo(user, 3);
+  async get(@CurrentUser() user: AuthUser) {
+    return user.role === 'ADMIN' ? this.admin() : this.teacher(user);
+  }
 
-    if (user.role === 'ADMIN') {
-      const [students, teachers, classrooms, courses, todays] = await Promise.all([
-        this.prisma.student.count(),
-        this.prisma.user.count({ where: { role: 'TEACHER' } }),
-        this.prisma.classroom.count(),
-        this.prisma.course.count(),
-        this.prisma.attendance.findMany({ where: { date: today() }, select: { status: true } }),
-      ]);
-      const attended = todays.filter((t) => t.status !== 'ABSENT').length;
-      return {
-        role: 'ADMIN',
-        counts: { students, teachers, classrooms, courses },
-        attendanceToday: todays.length ? Math.round((attended / todays.length) * 100) : null,
-        latestAnnouncements,
-      };
-    }
-
-    if (user.role === 'TEACHER') {
-      const courses = await this.prisma.course.findMany({ where: { teacherId: user.id }, include: { classroom: true }, orderBy: { code: 'asc' } });
-      const marked = await this.prisma.attendance.groupBy({ by: ['courseId'], where: { date: today(), courseId: { in: courses.map((c) => c.id) } } });
-      const markedIds = new Set(marked.map((m) => m.courseId));
-      const assignments = await this.prisma.assignment.findMany({
-        where: { course: { teacherId: user.id } },
-        include: { course: true, submissions: { select: { marks: true } } },
-        orderBy: { dueDate: 'desc' },
-      });
-      const needsGrading = assignments
-        .map((a) => ({ id: a.id, title: a.title, course: a.course.code, waiting: a.submissions.filter((s) => s.marks === null).length }))
-        .filter((a) => a.waiting > 0)
-        .slice(0, 5);
-      return {
-        role: 'TEACHER',
-        courses: courses.map((c) => ({ id: c.id, code: c.code, name: c.name, classroom: c.classroom.name, markedToday: markedIds.has(c.id) })),
-        needsGrading,
-        latestAnnouncements,
-      };
-    }
-
-    // Student or parent: everything is about one student.
-    const sid = await this.access.resolveStudentId(user, studentId);
-    const student = await this.prisma.student.findUniqueOrThrow({ where: { id: sid } });
-    const [att, assignments, graded] = await Promise.all([
-      this.attendance.summaryForStudent(sid),
-      this.prisma.assignment.findMany({
-        where: { course: { classroomId: student.classroomId } },
-        include: { course: true, submissions: { where: { studentId: sid }, select: { id: true } } },
-        orderBy: { dueDate: 'asc' },
-      }),
-      this.prisma.submission.findMany({ where: { studentId: sid, marks: { not: null } }, include: { assignment: true } }),
+  private async admin() {
+    const now = today();
+    const [students, active, faculty, onLeave, courses, classrooms, last30, activity] = await Promise.all([
+      this.prisma.user.count({ where: { role: 'STUDENT' } }),
+      this.prisma.user.count({ where: { role: 'STUDENT', status: 'ACTIVE' } }),
+      this.prisma.user.count({ where: { role: 'TEACHER' } }),
+      this.prisma.user.count({ where: { role: 'TEACHER', status: 'ON_LEAVE' } }),
+      this.prisma.course.findMany({ include: { classroom: true } }),
+      this.prisma.classroom.findMany({ include: { _count: { select: { students: true } } } }),
+      this.prisma.attendance.groupBy({ by: ['status'], where: { date: { gte: addDays(now, -30) } }, _count: true }),
+      this.prisma.activity.findMany({ orderBy: { createdAt: 'desc' }, take: 6 }),
     ]);
-    const now = new Date();
-    const pending = assignments.filter((a) => a.submissions.length === 0);
-    const earned = graded.reduce((n, g) => n + (g.marks ?? 0), 0);
-    const possible = graded.reduce((n, g) => n + g.assignment.maxMarks, 0);
+    const byDept = new Map<string, number>();
+    for (const c of classrooms) byDept.set(c.dept, (byDept.get(c.dept) ?? 0) + c._count.students);
+
+    const weeks: { label: string; pct: number | null }[] = [];
+    for (let i = 7; i >= 0; i--) {
+      const from = addDays(now, -7 * (i + 1)), to = addDays(now, -7 * i);
+      const rows = await this.prisma.attendance.groupBy({ by: ['status'], where: { date: { gte: from, lt: to } }, _count: true });
+      weeks.push({ label: parseISO(from).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }), pct: pctOf(rows) });
+    }
     return {
-      role: user.role,
-      attendanceOverall: att.overall,
-      gradeOverall: possible ? Math.round((earned / possible) * 100) : null,
-      overdueCount: pending.filter((a) => a.dueDate < now).length,
-      dueSoon: pending
-        .filter((a) => a.dueDate >= now)
-        .slice(0, 5)
-        .map((a) => ({ id: a.id, title: a.title, course: a.course.code, dueDate: a.dueDate })),
-      latestAnnouncements,
+      counts: { students, active, faculty, onLeave, courses: courses.length, depts: new Set(courses.map((c) => c.classroom.dept)).size },
+      attendance30: pctOf(last30),
+      enrollment: [...byDept.entries()].map(([dept, n]) => ({ dept, n })).sort((a, b) => b.n - a.n),
+      weeks,
+      activity,
+    };
+  }
+
+  private async teacher(user: AuthUser) {
+    const now = today();
+    const weekday = parseISO(now).getDay();
+    const courses = await this.prisma.course.findMany({
+      where: { teacherId: user.id },
+      include: { slots: true, classroom: { include: { _count: { select: { students: true } } } } },
+      orderBy: { code: 'asc' },
+    });
+    const ids = courses.map((c) => c.id);
+    const [marked, assignments, attRows, pendingLeaves, below] = await Promise.all([
+      this.prisma.attendance.groupBy({ by: ['courseId'], where: { date: now, courseId: { in: ids }, source: 'MANUAL' } }),
+      this.prisma.assignment.findMany({ where: { courseId: { in: ids } }, include: { course: true, submissions: { select: { marks: true } } }, orderBy: { dueDate: 'asc' } }),
+      this.prisma.attendance.groupBy({ by: ['status'], where: { courseId: { in: ids } }, _count: true }),
+      this.prisma.leaveRequest.count({ where: { status: 'PENDING', student: { classroom: { coordinatorId: user.id } } } }),
+      this.attendance.belowMinimum(ids),
+    ]);
+
+    // Merge back-to-back periods of the same course and room into one block (labs run two hours).
+    const blocks: { courseId: string; code: string; name: string; room: string; start: number; end: number }[] = [];
+    const todays = courses.flatMap((c) => c.slots.filter((s) => s.day === weekday).map((s) => ({ ...s, code: c.code, name: c.name }))).sort((a, b) => a.slot - b.slot);
+    for (const s of todays) {
+      const last = blocks[blocks.length - 1];
+      if (last && last.courseId === s.courseId && last.room === s.room && last.end === s.slot - 1) last.end = s.slot;
+      else blocks.push({ courseId: s.courseId, code: s.code, name: s.name, room: s.room, start: s.slot, end: s.slot });
+    }
+    const markedIds = new Set(marked.map((m) => m.courseId));
+    const classSize = new Map(courses.map((c) => [c.id, c.classroom._count.students]));
+    const studentsTaught = [...new Map(courses.map((c) => [c.classroomId, c.classroom._count.students])).values()].reduce((a, b) => a + b, 0);
+    const nowTs = new Date();
+
+    return {
+      today: blocks.map((b) => ({ ...b, time: `${PERIODS[b.start]}–${plusHour(PERIODS[b.end])}`, marked: markedIds.has(b.courseId) })),
+      toReview: assignments.reduce((n, a) => n + a.submissions.filter((s) => s.marks === null).length, 0),
+      assignmentCount: assignments.length,
+      courses: courses.map((c) => ({ id: c.id, code: c.code, name: c.name })),
+      studentsTaught,
+      avgAttendance: pctOf(attRows),
+      below: below.slice(0, 5),
+      pendingLeaves,
+      open: assignments
+        .filter((a) => a.dueDate >= nowTs)
+        .map((a) => ({ id: a.id, title: a.title, code: a.course.code, dueDate: a.dueDate, submitted: a.submissions.length, classSize: classSize.get(a.courseId) ?? 0 })),
     };
   }
 }

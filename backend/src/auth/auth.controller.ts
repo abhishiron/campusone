@@ -1,12 +1,12 @@
 import { Body, Controller, Get, Post } from '@nestjs/common';
-import { IsEmail, IsString, MinLength } from 'class-validator';
+import { IsString, MinLength } from 'class-validator';
 import { CurrentUser, Public } from '../common/decorators';
 import { AuthUser } from '../common/types';
 import { AuthService } from './auth.service';
 
 class LoginDto {
-  @IsEmail({}, { message: 'Enter a valid email address.' })
-  email: string;
+  @IsString() @MinLength(3, { message: 'Enter your email or enrollment number.' })
+  identifier: string;
 
   @IsString()
   @MinLength(1, { message: 'Enter your password.' })
@@ -20,7 +20,7 @@ export class AuthController {
   @Public()
   @Post('login')
   login(@Body() dto: LoginDto) {
-    return this.auth.login(dto.email, dto.password);
+    return this.auth.login(dto.identifier, dto.password);
   }
 
   @Get('me')

@@ -32,10 +32,11 @@ export class AuthGuard implements CanActivate {
 
     const user = await this.prisma.user.findUnique({
       where: { id: payload.sub },
-      select: { id: true, name: true, email: true, role: true },
+      select: { id: true, name: true, email: true, role: true, status: true },
     });
     if (!user) throw new UnauthorizedException('This account no longer exists.');
-    req.user = user;
+    if (user.status === 'SUSPENDED') throw new UnauthorizedException('This account is suspended. Contact the administrator.');
+    req.user = { id: user.id, name: user.name, email: user.email, role: user.role };
 
     const roles = this.reflector.getAllAndOverride<Role[]>(ROLES_KEY, targets);
     if (roles && !roles.includes(user.role as Role)) {

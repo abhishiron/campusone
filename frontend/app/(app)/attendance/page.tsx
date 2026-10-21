@@ -1,175 +1,358 @@
 'use client';
-import { Suspense, useEffect, useMemo, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useEffect, useMemo, useState } from 'react';
 import { useAuth } from '@/lib/auth';
-import { api, ApiError } from '@/lib/api';
-import { useFetch } from '@/lib/hooks';
-import { fmtDate, todayISO } from '@/lib/format';
-import { Badge, Empty, ErrorNote, Meter, PageHeader, Panel, Spinner, SubmitButton, useToast } from '@/components/ui';
-import type { AttendanceSummary, AttStatus, Course, RosterRow } from '@/lib/types';
+import { api } from '@/lib/api';
+import { useFetch, useStudentQuery, useTick } from '@/lib/hooks';
+import { ago, fmtDate, fmtDist, hm, plural, todayISO } from '@/lib/format';
+import { DESKTOP_KEY, usePage } from '@/components/Shell';
+import { Icon } from '@/components/Icon';
+import { Async, Avatar, Empty, Loading, Modal, Panel, Pill, Stat, Track, LEVEL_TEXT, levelTone, pctTone, useAction, useToast } from '@/components/ui';
+import { RiskBanner, Spark, attNote } from '@/components/attendance';
+import type { AttendanceSummary, Campus, CheckInRec, Course, Level, RosterRow, TrackerCourse } from '@/lib/types';
 
-const STATUSES: { value: AttStatus; label: string; on: string }[] = [
-  { value: 'PRESENT', label: 'Present', on: 'bg-ok text-white border-ok' },
-  { value: 'LATE', label: 'Late', on: 'bg-warn text-white border-warn' },
-  { value: 'ABSENT', label: 'Absent', on: 'bg-bad text-white border-bad' },
-];
-const tone = (s: AttStatus) => (s === 'PRESENT' ? 'ok' : s === 'LATE' ? 'warn' : 'bad');
-const label = (s: AttStatus) => s[0] + s.slice(1).toLowerCase();
+/* ================= professor ================= */
+const OK_ST = ['VERIFIED', 'APPROVED'];
+const ciLabel = (s: string) => ({ VERIFIED: 'Verified', APPROVED: 'Approved', REJECTED: 'Rejected', NEEDS_REVIEW: 'Needs review' })[s] ?? s;
+const ciTone = (s: string) => (OK_ST.includes(s) ? 'ok' : s === 'REJECTED' ? 'bad' : 'warn');
+const CiPill = ({ status }: { status: string }) => <Pill tone={ciTone(status)}>{ciLabel(status)}</Pill>;
 
-/* ---------- Teacher: take attendance ---------- */
-function TakeAttendance() {
+interface WindowState { campus: Campus; open: { id: string; courseId: string; code: string; until: string } | null; total: number; checkIns: CheckInRec[] }
+
+function Countdown({ until }: { until: string }) {
+  useTick(1000);
+  const ms = new Date(until).getTime() - Date.now();
+  return <>{ms > 0 ? `${Math.floor(ms / 6e4)}:${String(Math.floor(ms / 1e3) % 60).padStart(2, '0')}` : '0:00'}</>;
+}
+
+function CheckinPanel({ courseId, code, date, onCheckIns }: { courseId: string; code: string; date: string; onCheckIns: (c: CheckInRec[]) => void }) {
+  const state = useFetch<WindowState>(`/checkin/window?courseId=${courseId}&date=${date}`);
+  const { busy, run } = useAction();
   const toast = useToast();
-  const params = useSearchParams();
-  const { data: courses, loading: loadingCourses, error: coursesError } = useFetch<Course[]>('/courses');
-  const [courseId, setCourseId] = useState(params.get('courseId') || '');
-  const [date, setDate] = useState(todayISO());
-  const [marks, setMarks] = useState<Record<string, AttStatus | null>>({});
-  const [saving, setSaving] = useState(false);
-  const [dirty, setDirty] = useState(false);
+  const [minutes, setMinutes] = useState(10);
+  const [photo, setPhoto] = useState<CheckInRec | null>(null);
+  const w = state.data;
+  const here = w?.open?.courseId === courseId && new Date(w.open.until).getTime() > Date.now();
 
-  useEffect(() => { if (!courseId && courses?.length) setCourseId(courses[0].id); }, [courses, courseId]);
-  const rosterPath = courseId && date ? `/attendance/roster?courseId=${courseId}&date=${date}` : null;
-  const { data: roster, loading, error, reload } = useFetch<RosterRow[]>(rosterPath);
+  // Poll while a window is open so new check-ins appear live.
+  useEffect(() => {
+    if (!here) return;
+    const t = setInterval(state.reload, 4000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [here, courseId, date]);
+  useEffect(() => { if (w) onCheckIns(w.checkIns); }, [w, onCheckIns]);
+
+  const open = () => run(() => api('/checkin/window', { method: 'POST', body: { courseId, minutes } }), `Check-in open for ${minutes} minutes. Students can check in from their phones.`).then(state.reload);
+  const close = (id: string) => run(() => api(`/checkin/window/${id}/close`, { method: 'POST' }), 'Check-in closed').then(state.reload);
+  const decide = (c: CheckInRec, status: 'APPROVED' | 'REJECTED') =>
+    run(() => api(`/checkin/${c.id}/decide`, { method: 'POST', body: { status } }), `${c.name?.split(' ')[0]}'s check-in ${status.toLowerCase()}`).then(state.reload);
+  const moveHere = () => {
+    if (!navigator.geolocation) return toast("This browser can't share location.", 'error');
+    navigator.geolocation.getCurrentPosition(
+      (p) => run(() => api('/checkin/campus', { method: 'PUT', body: { lat: p.coords.latitude, lng: p.coords.longitude } }), 'Campus boundary moved to your current location for testing').then(state.reload),
+      () => toast('Location permission is needed to move the boundary. Allow it in your browser settings.', 'error'),
+      { enableHighAccuracy: true, timeout: 12000 },
+    );
+  };
+
+  if (!w) return <div className="mt" style={{ marginTop: 0, marginBottom: 16 }}><Panel title="Self check-in"><Loading /></Panel></div>;
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <Panel title="Self check-in">
+        {here ? (
+          <div className="ci-live">
+            <Pill tone="ok"><i className="pdot" />Open</Pill>
+            <span>Closes in <span className="count"><Countdown until={w.open!.until} /></span></span>
+            <span><b>{w.checkIns.length}</b> of {w.total} checked in</span>
+            <button className="btn sm" disabled={busy} onClick={() => close(w.open!.id)}>Close check-in</button>
+          </div>
+        ) : w.open ? (
+          <>
+            <p className="hint">Check-in is open for {w.open.code} until {hm(w.open.until)}. Close it before starting another.</p>
+            <button className="btn sm" disabled={busy} onClick={() => close(w.open!.id)}>Close check-in for {w.open.code}</button>
+          </>
+        ) : (
+          <>
+            <p className="hint" style={{ marginBottom: 10 }}>Students check in from their phones. The server checks they&apos;re inside the campus boundary and stores a live, time-stamped selfie. Verified check-ins mark them present automatically.</p>
+            <div className="tools">
+              <select value={minutes} onChange={(e) => setMinutes(Number(e.target.value))} aria-label="Window length">{[5, 10, 15].map((m) => <option key={m} value={m}>Open for {m} min</option>)}</select>
+              <button className="btn primary sm" disabled={busy} onClick={open}><Icon name="pin" size={16} />Start check-in for {code}</button>
+            </div>
+          </>
+        )}
+        {w.checkIns.length > 0 && (
+          <div className="ci-tiles">
+            {w.checkIns.map((c) => (
+              <div key={c.id} className="ci-tile">
+                <button className="thumb" onClick={() => setPhoto(c)} aria-label={`View ${c.name}'s selfie`}><img src={c.photo} alt="" /></button>
+                <div className="bd">
+                  <b>{c.name}</b>
+                  <span className="hint">{hm(c.createdAt)}, {fmtDist(c.dist)}, ±{Math.round(c.acc)} m</span>
+                  {c.flags.length > 0 && <span className="flags">{c.flags.join('. ')}</span>}
+                  <div className="row-btns">
+                    <CiPill status={c.status} />
+                    {c.status === 'NEEDS_REVIEW' && <>
+                      <button className="btn sm" disabled={busy} onClick={() => decide(c, 'REJECTED')}>Reject</button>
+                      <button className="btn sm primary" disabled={busy} onClick={() => decide(c, 'APPROVED')}>Approve</button>
+                    </>}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="geo-line">
+          <Icon name="pin" size={14} /><span>Boundary: {w.campus.name}, {w.campus.radius} m radius</span>
+          <button className="btn sm ghost" disabled={busy} onClick={moveHere}>Use my location as campus</button><span>for testing away from college</span>
+        </div>
+      </Panel>
+      {photo && (
+        <Modal title={photo.name ?? 'Check-in'} onClose={() => setPhoto(null)}>
+          <img src={photo.photo} alt="Check-in selfie" style={{ width: '100%', borderRadius: 10, display: 'block' }} />
+          <dl className="kv" style={{ marginTop: 14 }}>
+            <dt>Class</dt><dd>{code}, {fmtDate(photo.date)}</dd>
+            <dt>Time</dt><dd>{hm(photo.createdAt)}</dd>
+            <dt>Distance</dt><dd>{fmtDist(photo.dist)} from campus centre</dd>
+            <dt>GPS accuracy</dt><dd>±{Math.round(photo.acc)} m</dd>
+            <dt>Photo</dt><dd>{photo.method === 'LIVE' ? 'Live camera' : 'Camera app upload'}</dd>
+            <dt>Status</dt><dd><CiPill status={photo.status} /></dd>
+          </dl>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+interface Recent { courseId: string; date: string; present: number; total: number; code: string; name: string }
+
+function TeacherAttendance() {
+  usePage('Attendance', 'Mark attendance for your classes');
+  const courses = useFetch<Course[]>('/courses');
+  const recent = useFetch<Recent[]>('/attendance/recent');
+  const [courseId, setCourseId] = useState<string | null>(null);
+  const [date, setDate] = useState(todayISO());
+  const [marks, setMarks] = useState<Record<string, boolean>>({});
+  const { busy, run } = useAction();
 
   useEffect(() => {
-    if (roster) { setMarks(Object.fromEntries(roster.map((r) => [r.studentId, r.status]))); setDirty(false); }
-  }, [roster]);
+    if (!courses.data?.length || courseId) return;
+    const q = new URLSearchParams(window.location.search).get('course');
+    setCourseId(courses.data.find((c) => c.id === q)?.id ?? courses.data[0].id);
+  }, [courses.data, courseId]);
 
-  const set = (id: string, s: AttStatus) => { setMarks((m) => ({ ...m, [id]: s })); setDirty(true); };
-  const markAll = () => { if (roster) { setMarks(Object.fromEntries(roster.map((r) => [r.studentId, 'PRESENT' as AttStatus]))); setDirty(true); } };
-  const unmarked = roster ? roster.filter((r) => !marks[r.studentId]).length : 0;
-  const counts = useMemo(() => {
-    const v = Object.values(marks);
-    return { present: v.filter((x) => x === 'PRESENT').length, late: v.filter((x) => x === 'LATE').length, absent: v.filter((x) => x === 'ABSENT').length };
-  }, [marks]);
+  const roster = useFetch<{ existing: boolean; rows: RosterRow[] }>(courseId ? `/attendance/roster?courseId=${courseId}&date=${date}` : null);
+  useEffect(() => {
+    if (roster.data) setMarks(Object.fromEntries(roster.data.rows.map((r) => [r.studentId, r.status ? r.status !== 'ABSENT' : true])));
+  }, [roster.data]);
+  const applyCheckIns = useMemo(() => (list: CheckInRec[]) => {
+    setMarks((m) => {
+      const next = { ...m };
+      for (const c of list) if (OK_ST.includes(c.status)) next[c.studentId] = true; else if (c.status === 'REJECTED') next[c.studentId] = false;
+      return next;
+    });
+  }, []);
+
+  if (courses.error) return <Async state={courses}>{() => null}</Async>;
+  if (!courses.data) return <Loading />;
+  if (!courses.data.length) return <Empty>You have no courses assigned yet.</Empty>;
+  const course = courses.data.find((c) => c.id === courseId) ?? courses.data[0];
+  const rows = roster.data?.rows ?? [];
+  const present = rows.filter((r) => marks[r.studentId]).length;
 
   const save = async () => {
-    if (!roster) return;
-    setSaving(true);
-    try {
-      await api('/attendance/mark', { method: 'POST', body: { courseId, date, records: roster.map((r) => ({ studentId: r.studentId, status: marks[r.studentId] })) } });
-      toast(`Attendance saved for ${roster.length} students.`);
-      setDirty(false); reload();
-    } catch (e) { toast(e instanceof ApiError ? e.message : 'Could not save attendance.', 'error'); }
-    finally { setSaving(false); }
+    const r = await run(() => api<{ present: number; saved: number; warned: string[] }>('/attendance/mark', {
+      method: 'POST', body: { courseId: course.id, date, records: rows.map((x) => ({ studentId: x.studentId, status: marks[x.studentId] ? 'PRESENT' : 'ABSENT' })) },
+    }), (x) => `Attendance saved: ${x.present} of ${x.saved} present.${x.warned.length ? ` ${x.warned.join(', ')} ${x.warned.length === 1 ? 'is' : 'are'} now at risk and ${x.warned.length === 1 ? 'has' : 'have'} been warned.` : ''}`);
+    if (r) { roster.reload(); recent.reload(); }
   };
 
   return (
     <>
-      <PageHeader title="Attendance" subtitle="Pick a course and date, mark each student, then save." />
-      {coursesError && <ErrorNote message={coursesError} />}
-      {loadingCourses ? <Spinner /> : !courses?.length ? (
-        <Panel><Empty title="No courses assigned" hint="Ask an administrator to assign you a course." /></Panel>
-      ) : (
-        <>
-          <div className="mb-5 flex flex-wrap items-end gap-4">
-            <label className="block">
-              <span className="mb-1.5 block text-sm font-medium">Course</span>
-              <select className="field !h-[42px] !w-auto min-w-[240px]" value={courseId} onChange={(e) => setCourseId(e.target.value)}>
-                {courses.map((c) => <option key={c.id} value={c.id}>{c.code} · {c.name} ({c.classroom})</option>)}
-              </select>
-            </label>
-            <label className="block">
-              <span className="mb-1.5 block text-sm font-medium">Date</span>
-              <input type="date" className="field !h-[42px] !w-auto" value={date} max={todayISO()} onChange={(e) => e.target.value && setDate(e.target.value)} />
-            </label>
+      {date === todayISO() && <CheckinPanel key={course.id} courseId={course.id} code={course.code} date={date} onCheckIns={applyCheckIns} />}
+      <section className="card">
+        <header className="card-h">
+          <div className="tools">
+            <select value={course.id} onChange={(e) => setCourseId(e.target.value)} aria-label="Course">{courses.data.map((c) => <option key={c.id} value={c.id}>{c.code}, {c.name}</option>)}</select>
+            <input type="date" value={date} max={todayISO()} onChange={(e) => e.target.value && setDate(e.target.value)} aria-label="Date" />
           </div>
-
-          <Panel>
-            {loading ? <Spinner label="Loading class list" /> : error ? <div className="p-5"><ErrorNote message={error} onRetry={reload} /></div> : !roster?.length ? (
-              <Empty title="No students in this class" hint="Add students to the class from the People page." />
-            ) : (
-              <>
-                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-3">
-                  <p className="text-sm text-muted">
-                    <span className="font-semibold text-ok">{counts.present}</span> present · <span className="font-semibold text-warn">{counts.late}</span> late · <span className="font-semibold text-bad">{counts.absent}</span> absent
-                    {unmarked > 0 && <> · {unmarked} not marked</>}
-                  </p>
-                  <button className="btn-quiet !py-1.5" onClick={markAll}>Mark everyone present</button>
-                </div>
-                <ul className="divide-y divide-line">
-                  {roster.map((r) => (
-                    <li key={r.studentId} className="flex flex-wrap items-center justify-between gap-3 px-5 py-3">
-                      <div>
-                        <p className="font-medium">{r.name}</p>
-                        <p className="text-sm text-muted">{r.rollNo}</p>
-                      </div>
-                      <div className="flex gap-1.5" role="group" aria-label={`Attendance for ${r.name}`}>
-                        {STATUSES.map((s) => (
-                          <button key={s.value} aria-pressed={marks[r.studentId] === s.value} onClick={() => set(r.studentId, s.value)}
-                            className={`rounded border px-3 py-1.5 text-sm font-medium transition-colors ${marks[r.studentId] === s.value ? s.on : 'border-line bg-surface text-muted hover:border-ink/40 hover:text-ink'}`}>
-                            {s.label}
-                          </button>
-                        ))}
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-                <div className="flex items-center justify-between gap-3 border-t border-line px-5 py-3.5">
-                  <p className="text-sm text-muted">{unmarked > 0 ? 'Mark every student before saving.' : dirty ? 'You have unsaved changes.' : 'All changes saved.'}</p>
-                  <SubmitButton busy={saving} disabled={unmarked > 0 || !dirty} onClick={save}>Save attendance</SubmitButton>
-                </div>
-              </>
-            )}
-          </Panel>
-        </>
-      )}
+          <div className="tools">
+            <span className="counter">Present <b>{present}</b> of <b>{rows.length}</b></span>
+            <button className="btn sm" onClick={() => setMarks(Object.fromEntries(rows.map((r) => [r.studentId, true])))}>Mark all present</button>
+          </div>
+        </header>
+        <div className="card-b flush">
+          {!roster.data ? <Loading /> : (
+            <ul className="roster">
+              {rows.map((s) => {
+                const on = !!marks[s.studentId];
+                return (
+                  <li key={s.studentId}>
+                    <div className="who">
+                      <Avatar name={s.name} />
+                      <div><b>{s.name}</b><small className="mono">{s.rollNo}</small></div>
+                      {s.checkIn && <span className={`pill ${ciTone(s.checkIn)} hide-s`} title={`Self check-in ${ciLabel(s.checkIn).toLowerCase()}`}><Icon name="pin" size={12} />{OK_ST.includes(s.checkIn) ? 'Checked in' : ciLabel(s.checkIn)}</span>}
+                    </div>
+                    <div className="seg" role="group" aria-label={`Attendance for ${s.name}`}>
+                      <button className={`p ${on ? 'on' : ''}`} aria-pressed={on} onClick={() => setMarks((m) => ({ ...m, [s.studentId]: true }))}>Present</button>
+                      <button className={`a ${on ? '' : 'on'}`} aria-pressed={!on} onClick={() => setMarks((m) => ({ ...m, [s.studentId]: false }))}>Absent</button>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+        <footer className="card-f">
+          {roster.data?.existing && <span className="hint">Already saved for this date. Saving again updates it.</span>}
+          <button className="btn primary" disabled={busy || !rows.length} onClick={save}><Icon name="check" size={16} />Save attendance</button>
+        </footer>
+      </section>
+      <div className="mt">
+        <Panel title="Recently saved">
+          {recent.data?.length ? (
+            <ul className="list">
+              {recent.data.map((l) => (
+                <li key={l.courseId + l.date}>
+                  <span className="time">{fmtDate(l.date)}</span>
+                  <div className="grow"><b>{l.name}</b><small>{l.code}</small></div>
+                  <Pill tone={l.present / l.total >= 0.75 ? 'ok' : 'warn'}>{l.present} of {l.total} present</Pill>
+                </li>
+              ))}
+            </ul>
+          ) : <Empty>Nothing saved yet. Mark the roster above and save.</Empty>}
+        </Panel>
+      </div>
     </>
   );
 }
 
-/* ---------- Student / parent: view ---------- */
-function ViewAttendance() {
-  const { activeStudent, user } = useAuth();
-  const { data, error, loading, reload } = useFetch<AttendanceSummary>(activeStudent ? `/attendance/summary?studentId=${activeStudent.id}` : null);
+/* ================= student and parent tracker ================= */
+function Simulator({ courses, warnAt }: { courses: TrackerCourse[]; warnAt: number }) {
+  const [code, setCode] = useState(courses[0]?.code ?? '');
+  const x = courses.find((c) => c.code === code) ?? courses[0];
+  const maxN = Math.max(1, Math.min(15, x?.rem || 15));
+  const [n, setN] = useState(5);
+  const [m, setM] = useState(3);
+  if (!x) return null;
+  const nn = Math.min(n, maxN), mm = Math.min(m, nn);
+  const np = ((x.a + mm) / (x.t + nn)) * 100;
+  const lv: Level = np < 75 ? 'DANGER' : np < warnAt ? 'WARN' : 'OK';
+  const d = np - (x.pct ?? 0);
+  const safeM = Math.max(0, Math.ceil(0.75 * (x.t + nn) - x.a));
+  return (
+    <div className="sim">
+      <label className="field"><span>Subject</span><select value={x.code} onChange={(e) => setCode(e.target.value)}>{courses.map((c) => <option key={c.code} value={c.code}>{c.code}, {c.name}</option>)}</select></label>
+      <label className="field"><span>Next <b>{nn}</b> classes</span><input type="range" min={1} max={maxN} value={nn} onChange={(e) => setN(Number(e.target.value))} /></label>
+      <label className="field"><span>I&apos;ll attend <b>{mm}</b> of them</span><input type="range" min={0} max={nn} value={mm} onChange={(e) => setM(Number(e.target.value))} /></label>
+      <div className="sim-out" aria-live="polite">
+        <div className="sim-v"><span className={`pct ${pctTone(np, warnAt)}`}>{np.toFixed(1)}%</span><Pill tone={levelTone(lv)}>{LEVEL_TEXT[lv]}</Pill></div>
+        <p>{(x.pct ?? 0).toFixed(1)}% now, {d >= 0 ? '+' : '−'}{Math.abs(d).toFixed(1)} points after these {plural(nn, 'class')}.</p>
+        <p className="hint">{safeM > nn ? `Even attending all ${nn} keeps you below 75%.` : `Attend at least ${safeM} of the next ${nn} to stay at or above 75%.`}</p>
+      </div>
+    </div>
+  );
+}
 
+function AlertSettings({ s, onChange }: { s: AttendanceSummary; onChange: () => void }) {
+  const { user } = useAuth();
+  const toast = useToast();
+  const { run } = useAction();
+  const [desk, setDesk] = useState(false);
+  useEffect(() => setDesk(localStorage.getItem(DESKTOP_KEY) === '1' && 'Notification' in window && Notification.permission === 'granted'), []);
+  const patch = (body: object, msg: string) => run(() => api('/attendance/settings', { method: 'PATCH', body }), msg).then(onChange);
+  const deskOn = async () => {
+    if (!('Notification' in window)) return toast("This browser doesn't support desktop notifications.", 'error');
+    const p = await Notification.requestPermission();
+    if (p !== 'granted') return toast('Notifications are blocked. Allow them for this site in your browser settings.', 'error');
+    localStorage.setItem(DESKTOP_KEY, '1'); setDesk(true);
+    new Notification('CampusOne', { body: 'Desktop alerts are on. You will be warned when a subject gets close to 75%.' });
+    toast('Desktop alerts turned on');
+  };
   return (
     <>
-      <PageHeader title="Attendance" subtitle={user?.role === 'PARENT' && activeStudent ? `Attendance for ${activeStudent.name}. A minimum of 75% is required in each course.` : 'A minimum of 75% is required in each course.'} />
-      {loading ? <Spinner /> : error || !data ? <ErrorNote message={error || 'Could not load attendance.'} onRetry={reload} /> : (
-        <div className="space-y-6">
-          <div className="rounded border border-line bg-surface px-5 py-4">
-            <p className="text-sm text-muted">Overall</p>
-            <p className={`font-serif text-[40px] leading-tight ${data.overall === null ? '' : data.overall >= 75 ? 'text-ok' : 'text-bad'}`}>{data.overall === null ? 'No classes recorded yet' : `${data.overall}%`}</p>
-            {data.overall !== null && <p className="text-sm text-muted">across {data.total} recorded classes</p>}
-          </div>
-
-          <Panel title="By course">
-            <ul className="divide-y divide-line">
-              {data.courses.map((c) => (
-                <li key={c.courseId} className="px-5 py-4">
-                  <div className="flex items-baseline justify-between gap-3">
-                    <p className="font-medium">{c.code} · {c.name}</p>
-                    <p className={`font-serif text-xl ${c.percentage === null ? 'text-muted' : c.percentage >= 75 ? 'text-ok' : 'text-bad'}`}>{c.percentage === null ? '–' : `${c.percentage}%`}</p>
-                  </div>
-                  <div className="my-2"><Meter value={c.percentage} /></div>
-                  <p className="text-sm text-muted">{c.present} present · {c.late} late · {c.absent} absent{c.percentage !== null && c.percentage < 75 && <span className="font-medium text-bad"> · Below 75%</span>}</p>
-                </li>
-              ))}
-            </ul>
-          </Panel>
-
-          <Panel title="Recent classes">
-            {data.recent.length === 0 ? <Empty title="Nothing recorded yet" /> : (
-              <ul className="divide-y divide-line">
-                {data.recent.map((r) => (
-                  <li key={r.id} className="flex items-center justify-between gap-3 px-5 py-3">
-                    <div><p className="text-sm font-medium">{r.course}</p><p className="text-xs text-muted">{fmtDate(r.date)}</p></div>
-                    <Badge tone={tone(r.status)}>{label(r.status)}</Badge>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Panel>
-        </div>
-      )}
+      <label className="field"><span>Warn me when a subject drops below</span>
+        <select value={s.warnAt} onChange={(e) => patch({ warnAt: Number(e.target.value) }, `You'll be warned when a subject drops below ${e.target.value}%`)}>
+          {s.warnOptions.map((v) => <option key={v} value={v}>{v}%</option>)}
+        </select>
+      </label>
+      <label className="check"><input type="checkbox" checked disabled />In-app notification and pop-up at sign-in</label>
+      <label className="check">
+        <input type="checkbox" checked={s.alertParent} disabled={!s.hasParent} onChange={(e) => patch({ alertParent: e.target.checked }, e.target.checked ? 'Your parent will be notified too' : 'Parent alerts turned off')} />
+        {s.hasParent ? "Also notify my parent's CampusOne account" : 'Notify my parent (no parent account is linked yet)'}
+      </label>
+      <div className="desk">
+        <span>{desk ? 'Desktop alerts are on for this browser.' : `Get a desktop notification while ${user?.role === 'STUDENT' ? 'CampusOne' : 'this page'} is open in the background.`}</span>
+        {desk ? <button className="btn sm ghost" onClick={() => { localStorage.removeItem(DESKTOP_KEY); setDesk(false); toast('Desktop alerts turned off'); }}>Turn off</button>
+          : <button className="btn sm" onClick={deskOn}>Turn on desktop alerts</button>}
+      </div>
     </>
+  );
+}
+
+function Tracker({ parent }: { parent: boolean }) {
+  const { activeStudent } = useAuth();
+  const { sep, ready } = useStudentQuery();
+  usePage(parent ? `${activeStudent?.name.split(' ')[0] ?? 'Child'}'s attendance` : 'Attendance tracker', 'Minimum 75% in every subject to sit the exams');
+  const state = useFetch<AttendanceSummary>(ready ? sep('/attendance/summary') : null);
+  const { run } = useAction();
+  return (
+    <Async state={state}>
+      {(s) => {
+        const cnt = (l: Level) => s.courses.filter((x) => x.level === l).length;
+        const unread = s.alerts.filter((a) => !a.read).length;
+        const readAll = () => run(() => api(sep('/attendance/alerts/read'), { method: 'POST' })).then(() => { state.reload(); window.dispatchEvent(new Event('campusone-refresh')); });
+        return (
+          <>
+            <RiskBanner courses={s.courses} showLink={false} />
+            <div className="stats">
+              <Stat label="Overall" value={s.overall === null ? '—' : `${s.overall.toFixed(1)}%`} note={`${s.attended} of ${s.total} classes`} tone={s.overall !== null && s.overall < s.warnAt ? 'warn' : undefined} />
+              <Stat label="Safe" value={cnt('OK')} note={`At or above ${s.warnAt}%`} />
+              <Stat label="Close to limit" value={cnt('WARN')} note={`Between 75% and ${s.warnAt}%`} tone={cnt('WARN') ? 'warn' : undefined} />
+              <Stat label="Below 75%" value={cnt('DANGER')} note={cnt('DANGER') ? 'Exam eligibility at risk' : 'None'} tone={cnt('DANGER') ? 'warn' : undefined} />
+            </div>
+            <div className="grid-2">
+              <Panel title="By subject" extra={<span className="hint legend-m"><i className="lm75" />75% <i className="lmw" />{s.warnAt}% warning</span>}>
+                {s.courses.map((x) => (
+                  <div key={x.code} className="trk">
+                    <div className="trk-h">
+                      <div><b>{x.name}</b><small className="mono">{x.code}</small></div>
+                      <div className="trk-r">{x.pct !== null && <Spark hist={x.hist} cur={x.pct} />}<span className={`pct ${pctTone(x.pct, s.warnAt)}`}>{x.pct === null ? '—' : `${x.pct.toFixed(1)}%`}</span></div>
+                    </div>
+                    <Track pct={x.pct ?? 0} tone={pctTone(x.pct, s.warnAt)} marker warnAt={s.warnAt} />
+                    <div className="trk-f"><Pill tone={levelTone(x.level)}>{LEVEL_TEXT[x.level]}</Pill><span>{x.a} of {x.t} attended</span><span>{x.rem} left this semester</span></div>
+                    {x.t > 0 && <p className="att-n">{attNote(x)}</p>}
+                  </div>
+                ))}
+              </Panel>
+              <div className="col">
+                <Panel title="What if I skip?"><Simulator courses={s.courses.filter((c) => c.t > 0)} warnAt={s.warnAt} /></Panel>
+                {!parent && <Panel title="Alert settings"><AlertSettings s={s} onChange={state.reload} /></Panel>}
+              </div>
+            </div>
+            <div className="mt">
+              <Panel title="Alert history" extra={unread ? <button className="btn sm ghost" onClick={readAll}>Mark {unread} as read</button> : undefined}>
+                {s.alerts.length ? (
+                  <ul className="list">
+                    {s.alerts.map((a) => (
+                      <li key={a.id} className={a.read ? '' : 'unread-li'}>
+                        <span className={`ico ${a.level === 'DANGER' ? 'danger' : a.level === 'WARN' ? 'warn' : 'ok'}`}><Icon name={a.level === 'OK' ? 'check' : 'alert'} size={16} /></span>
+                        <div className="grow"><b>{a.text}</b><small>{ago(a.createdAt)}, sent by {a.channels.join(', ')}</small></div>
+                      </li>
+                    ))}
+                  </ul>
+                ) : <Empty>No alerts yet. You will be notified here when a subject gets close to 75%.</Empty>}
+              </Panel>
+            </div>
+          </>
+        );
+      }}
+    </Async>
   );
 }
 
 export default function AttendancePage() {
   const { user } = useAuth();
-  if (!user) return null;
-  if (user.role === 'TEACHER' || user.role === 'ADMIN') return <Suspense fallback={<Spinner />}><TakeAttendance /></Suspense>;
-  return <ViewAttendance />;
+  if (user!.role === 'TEACHER') return <TeacherAttendance />;
+  if (user!.role === 'ADMIN') return <Empty>Attendance is taken by professors.</Empty>;
+  return <Tracker parent={user!.role === 'PARENT'} />;
 }

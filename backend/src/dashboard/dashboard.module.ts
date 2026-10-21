@@ -1,7 +1,6 @@
 import { Module } from '@nestjs/common';
-import { AnnouncementsModule } from '../announcements/announcements.module';
-import { AttendanceModule } from '../attendance/attendance.module';
 import { DashboardController } from './dashboard.controller';
+import { AttendanceModule } from '../attendance/attendance.module';
 
-@Module({ imports: [AnnouncementsModule, AttendanceModule], controllers: [DashboardController] })
+@Module({ imports: [AttendanceModule], controllers: [DashboardController] })
 export class DashboardModule {}

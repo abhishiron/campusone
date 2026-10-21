@@ -1,7 +1,7 @@
 'use client';
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { api, tokenStore } from './api';
-import type { Session, StudentRef, User } from './types';
+import type { Role, Session, StudentRef, User } from './types';
 
 interface AuthValue {
   user: User | null;
@@ -9,12 +9,15 @@ interface AuthValue {
   activeStudent: StudentRef | null;
   setActiveStudentId: (id: string) => void;
   loading: boolean;
-  login: (email: string, password: string) => Promise<User>;
+  login: (identifier: string, password: string) => Promise<User>;
   logout: () => void;
 }
 
 const AuthContext = createContext<AuthValue | null>(null);
 const CHILD_KEY = 'campusone_child';
+
+/** CSS role name used for the accent colour. */
+export const roleKey = (r: Role) => ({ ADMIN: 'admin', TEACHER: 'professor', STUDENT: 'student', PARENT: 'parent' })[r];
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
@@ -29,8 +32,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       .finally(() => setLoading(false));
   }, []);
 
-  const login = useCallback(async (email: string, password: string) => {
-    const res = await api<Session & { token: string }>('/auth/login', { method: 'POST', body: { email, password } });
+  const login = useCallback(async (identifier: string, password: string) => {
+    const res = await api<Session & { token: string }>('/auth/login', { method: 'POST', body: { identifier, password } });
     tokenStore.set(res.token);
     setSession({ user: res.user, students: res.students });
     setActiveId(null);
@@ -40,6 +43,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const logout = useCallback(() => {
     tokenStore.clear();
     window.localStorage.removeItem(CHILD_KEY);
+    window.sessionStorage.removeItem('campusone_warned');
     setSession(null);
     window.location.href = '/login';
   }, []);
