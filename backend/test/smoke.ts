@@ -178,10 +178,20 @@ async function main() {
   check('faculty-only notice hidden from students', !(await call('GET', '/announcements', garv.token)).data.some((a: any) => a.title.startsWith('Faculty meeting')));
   const nu = await call('POST', '/people', admin.token, { role: 'STUDENT', name: 'Test Student', email: 'test.student@msit.edu', dept: 'CSE' });
   check('admin adds a student with a temporary password', nu.status === 201 && !!nu.data.tempPassword && !!nu.data.rollNo, nu.data);
-  check('new student can sign in', !!(await login(nu.data.rollNo, nu.data.tempPassword))?.token);
+  const fresh = await login(nu.data.rollNo, nu.data.tempPassword);
+  check('new student can sign in and is told to change the temporary password', !!fresh?.token && fresh.user?.mustChangePassword === true, fresh);
+  check('temporary password blocks the app until changed (403)', (await call('GET', '/attendance/summary', fresh.token)).status === 403);
+  check('profile still loads with a temporary password', (await call('GET', '/auth/me', fresh.token)).status === 200);
+  check('wrong current password rejected (400)', (await call('POST', '/auth/change-password', fresh.token, { currentPassword: 'wrong', newPassword: 'a-good-password' })).status === 400);
+  check('short new password rejected (400)', (await call('POST', '/auth/change-password', fresh.token, { currentPassword: nu.data.tempPassword, newPassword: 'short' })).status === 400);
+  const changed = await call('POST', '/auth/change-password', fresh.token, { currentPassword: nu.data.tempPassword, newPassword: 'a-good-password' });
+  check('new student sets their own password', changed.status === 201 && changed.data.user?.mustChangePassword === false, changed.data);
+  check('the app opens after the change', (await call('GET', '/attendance/summary', fresh.token)).status === 200);
+  check('the temporary password no longer works', (await call('POST', '/auth/login', undefined, { identifier: nu.data.rollNo, password: nu.data.tempPassword })).status === 401);
+  check('demo accounts are not asked to change their password', garv.user?.mustChangePassword === false);
   check('duplicate email rejected (400)', (await call('POST', '/people', admin.token, { role: 'TEACHER', name: 'Dup', email: 'test.student@msit.edu', dept: 'IT' })).status === 400);
   check('admin suspends the account', (await call('PATCH', `/people/${nu.data.id}/status`, admin.token, { status: 'SUSPENDED' })).status === 200);
-  check('suspended account is locked out', (await call('POST', '/auth/login', undefined, { identifier: nu.data.rollNo, password: nu.data.tempPassword })).status === 401);
+  check('suspended account is locked out', (await call('POST', '/auth/login', undefined, { identifier: nu.data.rollNo, password: 'a-good-password' })).status === 401);
 
   // ---------- super admin and school accounts ----------
   // There is no API route that grants SUPERADMIN (by design), so promote a throwaway account in the database,
@@ -191,6 +201,7 @@ async function main() {
   await prisma.user.update({ where: { id: owner.data.id }, data: { role: 'SUPERADMIN' } });
   await prisma.$disconnect();
   const sup = await login('platform.owner@msit.edu', owner.data.tempPassword);
+  await call('POST', '/auth/change-password', sup.token, { currentPassword: owner.data.tempPassword, newPassword: 'owner-password-123' });
   check('promoted account signs in as SUPERADMIN', sup?.user?.role === 'SUPERADMIN', sup);
   check('institute admin cannot open the super admin panel (403)', (await call('GET', '/superadmin/subscribers', admin.token)).status === 403);
   check('student cannot add a school (403)', (await call('POST', '/superadmin/schools', garv.token, { name: 'X School', email: 'x@school.test', plan: 'PRO', durationDays: 30 })).status === 403);
@@ -208,7 +219,9 @@ async function main() {
 
   // A school is a separate customer: it must not see anything belonging to MSIT.
   const sch = await login('smoke.school@campusone.test', school.data.tempPassword);
-  check('school signs in with its temporary password', sch?.user?.role === 'SCHOOL', sch);
+  check('school signs in with its temporary password and must change it', sch?.user?.role === 'SCHOOL' && sch.user.mustChangePassword === true, sch);
+  // Change it first, so the checks below test the role rules, not the temporary-password block.
+  check('school sets its own password', (await call('POST', '/auth/change-password', sch.token, { currentPassword: school.data.tempPassword, newPassword: 'school-password-1' })).status === 201);
   const garvId = parent.students[0].id;
   for (const [what, path] of [
     ['grades', `/grades?studentId=${garvId}`],
@@ -222,6 +235,28 @@ async function main() {
     check(`super admin cannot read MSIT ${what} (403)`, (await call('GET', path, sup.token)).status === 403);
   }
   check('school cannot open the super admin panel (403)', (await call('GET', '/superadmin/subscribers', sch.token)).status === 403);
+  // Subscription management.
+  const subId = school.data.subscription.id;
+  const renewed = await call('POST', `/superadmin/subscriptions/${subId}/renew`, sup.token, { durationDays: 10 });
+  check('renewing a live plan extends it from its end date (30 + 10 days)', renewed.status === 201 && renewed.data.daysLeft === 40, renewed.data);
+  check('institute admin cannot renew (403)', (await call('POST', `/superadmin/subscriptions/${subId}/renew`, admin.token, { durationDays: 10 })).status === 403);
+  check('renewal needs a positive number of days (400)', (await call('POST', `/superadmin/subscriptions/${subId}/renew`, sup.token, { durationDays: 0 })).status === 400);
+  check('cancelling the plan works', (await call('POST', `/superadmin/subscriptions/${subId}/cancel`, sup.token)).data?.status === 'CANCELLED');
+  check('cancelling twice is rejected (400)', (await call('POST', `/superadmin/subscriptions/${subId}/cancel`, sup.token)).status === 400);
+  const afterCancel = (await call('GET', '/superadmin/subscribers', sup.token)).data;
+  check('a cancelled plan leaves the live list', afterCancel.liveTotal === before.liveTotal && !afterCancel.subscribers.some((x: any) => x.id === subId), afterCancel);
+  const revived = await call('POST', `/superadmin/subscriptions/${subId}/renew`, sup.token, { durationDays: 15 });
+  check('renewing a cancelled plan restarts it from today', revived.data?.status === 'ACTIVE' && revived.data.daysLeft === 15, revived.data);
+  check('unknown subscription (404)', (await call('POST', '/superadmin/subscriptions/nope/cancel', sup.token)).status === 404);
+
+  // Password reset for a school that lost its details.
+  const reset = await call('POST', `/superadmin/schools/${school.data.user.id}/reset-password`, sup.token);
+  check('super admin resets a school password', reset.status === 201 && !!reset.data.tempPassword, reset.data);
+  check('the old school password stops working', (await call('POST', '/auth/login', undefined, { identifier: 'smoke.school@campusone.test', password: 'school-password-1' })).status === 401);
+  check('the reset password must be changed on sign-in', (await login('smoke.school@campusone.test', reset.data.tempPassword))?.user?.mustChangePassword === true);
+  check('only school accounts can be reset this way (404)', (await call('POST', `/superadmin/schools/${owner.data.id}/reset-password`, sup.token)).status === 404);
+  check('a school cannot reset passwords (403)', (await call('POST', `/superadmin/schools/${school.data.user.id}/reset-password`, sch.token)).status === 403);
+
   // The tighter rules must not take anything away from the institute roles.
   check('parent still reads child grades', (await call('GET', `/grades?studentId=${garvId}`, parent.token)).status === 200);
   check('professor still reads a student\'s grades', (await call('GET', `/grades?studentId=${garvId}`, neha.token)).status === 200);

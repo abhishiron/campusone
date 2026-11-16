@@ -68,7 +68,7 @@ export class PeopleController {
     }
     const user = await this.prisma.user.create({
       data: {
-        name: dto.name.trim(), email, passwordHash, role: dto.role, dept: dto.dept,
+        name: dto.name.trim(), email, passwordHash, mustChangePassword: true, role: dto.role, dept: dto.dept,
         designation: dto.role === 'TEACHER' ? 'Assistant Professor' : null,
         ...studentData,
       },

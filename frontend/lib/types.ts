@@ -1,7 +1,7 @@
 export type Role = 'SUPERADMIN' | 'ADMIN' | 'SCHOOL' | 'TEACHER' | 'STUDENT' | 'PARENT';
 /** Roles with a demo card on the sign-in page. Super admin and school accounts sign in with their own credentials. */
 export type DemoRole = Exclude<Role, 'SUPERADMIN' | 'SCHOOL'>;
-export interface User { id: string; name: string; email: string; role: Role; title: string }
+export interface User { id: string; name: string; email: string; role: Role; title: string; mustChangePassword?: boolean }
 export interface StudentRef { id: string; name: string; email: string; rollNo: string; classroom: string; program: string; batch: string; semester: number }
 export interface Session { user: User; students: StudentRef[] }
 export interface FileRef { id: string; name: string; size?: number }

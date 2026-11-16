@@ -10,6 +10,7 @@ interface AuthValue {
   setActiveStudentId: (id: string) => void;
   loading: boolean;
   login: (identifier: string, password: string) => Promise<User>;
+  changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
   logout: () => void;
 }
 
@@ -40,6 +41,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return res.user;
   }, []);
 
+  const changePassword = useCallback(async (currentPassword: string, newPassword: string) => {
+    const res = await api<Session>('/auth/change-password', { method: 'POST', body: { currentPassword, newPassword } });
+    setSession(res);
+  }, []);
+
   const logout = useCallback(() => {
     tokenStore.clear();
     window.localStorage.removeItem(CHILD_KEY);
@@ -58,9 +64,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setActiveStudentId: (id) => { setActiveId(id); window.localStorage.setItem(CHILD_KEY, id); },
       loading,
       login,
+      changePassword,
       logout,
     };
-  }, [session, activeId, loading, login, logout]);
+  }, [session, activeId, loading, login, changePassword, logout]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

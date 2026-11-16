@@ -25,6 +25,10 @@ Open http://localhost:3000, pick a role on the sign-in page and press **Fill in*
 
 To restore the demo data at any time: `npm run reset-data` (stop the servers first). This also clears uploaded files.
 
+### Deploying
+
+Set `JWT_SECRET` in `backend/.env` to a random value of at least 32 characters, for example the output of `openssl rand -hex 32`. A built server (`npm --prefix backend run build` then `npm --prefix backend start`) or one started with `NODE_ENV=production` refuses to start without one, because anyone who knows the example secret could create sign-in tokens. The development server only prints a warning.
+
 ### Trying self check-in
 
 1. Sign in as the professor, open **Attendance** and press **Start check-in**.
@@ -43,6 +47,10 @@ To restore the demo data at any time: `npm run reset-data` (stop the servers fir
 **Parent:** a read-only view of their child's overview, attendance, assignments, grades, timetable, exams, library and leave, and can pay fees.
 
 **Admin:** institute counts, enrollment by department, attendance over 8 weeks, live API and database health, an activity log, user management (add with a one-time password, suspend or activate) and courses.
+
+**Super admin (platform owner):** live subscribers by plan with search and filters, add a school (one-time password), renew or end a plan, and reset a school's password. There is no sign-up for this role: run `npm --prefix backend run make-superadmin -- <email>` on an existing account. `npm --prefix backend run seed-schools` adds two demo schools.
+
+**Temporary passwords:** anyone given a one-time password (new users, new schools, password resets) must choose their own password before they can use the app. The demo accounts above are not affected.
 
 Rules are enforced on the server, not just hidden in the UI: role checks on every route, students and parents only see their own records, the geofence distance is computed by the API, check-in only works while a window is open, placement eligibility and deadlines, library renewal limits, file type and size limits, and who can download each file.
 
