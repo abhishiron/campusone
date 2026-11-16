@@ -61,20 +61,31 @@ Rules are enforced on the server, not just hidden in the UI: role checks on ever
 | Next.js, TypeScript               | Yes (Next.js 14 App Router). Styling is plain CSS with design tokens       |
 | NestJS                            | Yes (modules per feature, guards, validation pipes, file uploads)          |
 | Prisma ORM                        | Yes                                                                        |
-| PostgreSQL                        | Runs on SQLite for a zero-setup demo. Same Prisma schema, see below        |
+| PostgreSQL                        | Yes in Docker and CI. Local `npm run dev` uses SQLite for zero setup; the same schema is generated for PostgreSQL |
 | Keycloak (OIDC)                   | Not yet. Sign-in uses email or enrollment number, password and JWT. Roles are already enforced |
-| Redis, Apache Kafka               | Not yet. Notifications are written by one service (`notify.service.ts`), the single place to publish events later |
-| Docker, AWS                       | Not yet. Uploads live in `backend/uploads` behind `files.service.ts`, the one place to switch to S3 |
+| Redis                             | Yes when `REDIS_URL` is set (Docker, CI): caches the admin attendance chart and counts failed sign-ins (5 tries, then a 15-minute lock). Without it an in-memory cache is used |
+| Apache Kafka                      | Not yet. Notifications are written by one service (`notify.service.ts`), the single place to publish events later |
+| Docker, Docker Compose            | Yes: `docker compose up` runs PostgreSQL, Redis, the API and the web app (see below) |
+| GitHub Actions                    | Yes: every push and pull request runs the API checks on PostgreSQL and Redis, builds the web app and the Docker images |
+| AWS                               | Not yet. The live demo runs on Render (API) and Vercel (web). Uploads live behind `files.service.ts`, the one place to switch to S3 |
 | Email and SMS alerts              | Not yet. Alerts go to the student's and parent's in-app notifications, plus optional browser desktop notifications |
 | Payment gateway                   | Not yet. "Pay" records the payment directly and says so on screen          |
 
-Be upfront about this in the demo: the features and four roles work end to end, and the infrastructure items above are the planned next steps.
+Be upfront about this in the demo: the features, roles, PostgreSQL, Redis, Docker and CI work end to end; Keycloak, Kafka, AWS, email/SMS and payments are the planned next steps.
 
-### Switching to PostgreSQL
+### Running with Docker (PostgreSQL and Redis)
 
-1. In `backend/prisma/schema.prisma`, change `provider = "sqlite"` to `provider = "postgresql"`.
-2. In `backend/.env`, set `DATABASE_URL` to your Postgres URL.
-3. Run `npm run reset-data`.
+```bash
+cp .env.docker.example .env        # then set JWT_SECRET, e.g. openssl rand -hex 32
+docker compose up --build -d
+docker compose run --rm api npm run db:seed      # demo data, first time only
+```
+
+Open http://localhost:3000. The admin's System health panel shows PostgreSQL and Redis with live round-trip times.
+
+### PostgreSQL without Docker
+
+Set `DATABASE_URL` to a Postgres URL in `backend/.env`, then run `npm --prefix backend run pg:generate` and `npm --prefix backend run pg:reset`. Edit only `prisma/schema.prisma`; the Postgres copy is generated from it.
 
 ## Checks
 

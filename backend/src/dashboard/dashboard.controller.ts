@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma.service';
 import { CurrentUser, Roles } from '../common/decorators';
 import { AuthUser } from '../common/types';
 import { AttendanceService } from '../attendance/attendance.service';
+import { CacheService } from '../common/cache.service';
 import { PERIODS, addDays, parseISO, plusHour, today } from '../common/dates';
 
 const pctOf = (rows: { status: string; _count: number }[]) => {
@@ -14,7 +15,7 @@ const pctOf = (rows: { status: string; _count: number }[]) => {
 @Controller('dashboard')
 @Roles('ADMIN', 'TEACHER')
 export class DashboardController {
-  constructor(private prisma: PrismaService, private attendance: AttendanceService) {}
+  constructor(private prisma: PrismaService, private attendance: AttendanceService, private cache: CacheService) {}
 
   @Get()
   async get(@CurrentUser() user: AuthUser) {
@@ -36,12 +37,16 @@ export class DashboardController {
     const byDept = new Map<string, number>();
     for (const c of classrooms) byDept.set(c.dept, (byDept.get(c.dept) ?? 0) + c._count.students);
 
-    const weeks: { label: string; pct: number | null }[] = [];
-    for (let i = 7; i >= 0; i--) {
-      const from = addDays(now, -7 * (i + 1)), to = addDays(now, -7 * i);
-      const rows = await this.prisma.attendance.groupBy({ by: ['status'], where: { date: { gte: from, lt: to } }, _count: true });
-      weeks.push({ label: parseISO(from).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }), pct: pctOf(rows) });
-    }
+    // Eight queries that change slowly: cached for 5 minutes (in Redis when it is configured).
+    const weeks = await this.cache.wrap(`dash:weeks:${now}`, 300, async () => {
+      const out: { label: string; pct: number | null }[] = [];
+      for (let i = 7; i >= 0; i--) {
+        const from = addDays(now, -7 * (i + 1)), to = addDays(now, -7 * i);
+        const rows = await this.prisma.attendance.groupBy({ by: ['status'], where: { date: { gte: from, lt: to } }, _count: true });
+        out.push({ label: parseISO(from).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }), pct: pctOf(rows) });
+      }
+      return out;
+    });
     return {
       counts: { students, active, faculty, onLeave, courses: courses.length, depts: new Set(courses.map((c) => c.classroom.dept)).size },
       attendance30: pctOf(last30),

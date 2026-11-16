@@ -1,23 +1,36 @@
-import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, HttpException, HttpStatus, Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../prisma.service';
 import { AuthUser } from '../common/types';
+import { CacheService } from '../common/cache.service';
+
+/** After this many failed sign-ins for one ID, further attempts are refused until the window ends. */
+export const MAX_FAILED_LOGINS = 5;
+const LOCK_WINDOW_SEC = 15 * 60;
 
 @Injectable()
 export class AuthService {
-  constructor(private prisma: PrismaService, private jwt: JwtService) {}
+  constructor(private prisma: PrismaService, private jwt: JwtService, private cache: CacheService) {}
 
   /** Students may sign in with their enrollment number; everyone can use their email. */
   async login(identifier: string, password: string) {
     const id = identifier.trim();
+    const failKey = `login:fail:${id.toLowerCase()}`;
+    if (((await this.cache.get<number>(failKey)) ?? 0) >= MAX_FAILED_LOGINS) {
+      throw new HttpException('Too many failed sign-in attempts for this ID. Try again in 15 minutes.', HttpStatus.TOO_MANY_REQUESTS);
+    }
     let user = await this.prisma.user.findUnique({ where: { email: id.toLowerCase() } });
     if (!user && /^\d{6,}$/.test(id)) {
       const s = await this.prisma.student.findUnique({ where: { rollNo: id }, include: { user: true } });
       user = s?.user ?? null;
     }
     const ok = user ? await bcrypt.compare(password, user.passwordHash) : false;
-    if (!user || !ok) throw new UnauthorizedException('That ID and password don\'t match an account. Check them and try again.');
+    if (!user || !ok) {
+      await this.cache.incr(failKey, LOCK_WINDOW_SEC);
+      throw new UnauthorizedException('That ID and password don\'t match an account. Check them and try again.');
+    }
+    await this.cache.del(failKey);
     if (user.status === 'SUSPENDED') throw new UnauthorizedException('This account is suspended. Contact the administrator.');
     const token = await this.jwt.signAsync({ sub: user.id, role: user.role });
     const authUser: AuthUser = { id: user.id, name: user.name, email: user.email, role: user.role as AuthUser['role'] };

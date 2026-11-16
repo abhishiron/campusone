@@ -39,6 +39,12 @@ async function main() {
   check('all four roles sign in (student by enrollment number)', [admin, neha, garv, parent, aryan].every((x) => x?.token), [admin, garv]);
   check('suspended student cannot sign in', (await call('POST', '/auth/login', undefined, { identifier: 'harsh038@msit.edu', password: 'student123' })).status === 401);
   check('parent is linked to Garv', parent.students?.[0]?.name === 'Garv Goel');
+  // Failed sign-ins are counted in the cache (Redis when REDIS_URL is set); the 6th try is refused.
+  const tries = [];
+  for (let i = 0; i < 6; i++) tries.push((await call('POST', '/auth/login', undefined, { identifier: 'lockout.test@msit.edu', password: 'wrong' })).status);
+  check('five failed sign-ins lock the ID (429 on the sixth)', tries.slice(0, 5).every((x) => x === 401) && tries[5] === 429, tries);
+  const hd = (await call('GET', '/health/details', admin.token)).data;
+  check('health reports the cache and database in use', typeof hd.cache?.backend === 'string' && typeof hd.cache?.ms === 'number' && /Prisma/.test(hd.provider), hd);
 
   // ---------- role protection ----------
   check('student cannot list users (403)', (await call('GET', '/people', garv.token)).status === 403);
