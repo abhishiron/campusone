@@ -28,6 +28,7 @@ export class AnnouncementsController {
   ) {}
 
   @Get()
+  @Roles('ADMIN', 'TEACHER', 'STUDENT', 'PARENT')
   list(@CurrentUser() user: AuthUser) {
     return this.service.visibleTo(user);
   }

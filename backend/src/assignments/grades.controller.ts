@@ -31,6 +31,7 @@ export class GradesController {
   constructor(private prisma: PrismaService, private access: AccessService, private notify: NotifyService, private activity: ActivityService) {}
 
   @Get()
+  @Roles('ADMIN', 'TEACHER', 'STUDENT', 'PARENT')
   async grades(@CurrentUser() user: AuthUser, @Query('studentId') studentId?: string) {
     const sid = await this.access.resolveStudentId(user, studentId);
     const student = await this.prisma.student.findUniqueOrThrow({ where: { id: sid }, include: { results: { orderBy: { semester: 'asc' } } } });

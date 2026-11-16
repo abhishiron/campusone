@@ -8,8 +8,11 @@ export class AnnouncementsService {
 
   /** Admins see everything; others see "all", their role's messages and their courses' messages. */
   async visibleTo(user: AuthUser, take?: number) {
-    let where: object = {};
-    if (user.role === 'TEACHER') {
+    // Default to nothing: only ADMIN sees every announcement, so a new role cannot inherit that view by accident.
+    let where: object = { id: { in: [] as string[] } };
+    if (user.role === 'ADMIN') {
+      where = {};
+    } else if (user.role === 'TEACHER') {
       where = { OR: [{ audience: { in: ['ALL', 'TEACHER'] } }, { course: { teacherId: user.id } }] };
     } else if (user.role === 'STUDENT' || user.role === 'PARENT') {
       const classIds = (await this.prisma.student.findMany({ where: user.role === 'STUDENT' ? { userId: user.id } : { parentId: user.id } })).map((s) => s.classroomId);

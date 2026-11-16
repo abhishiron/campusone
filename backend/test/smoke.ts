@@ -1,4 +1,6 @@
 /* End-to-end API checks. Run against freshly seeded data with the server up: npm run reset-data, then npm run test:api */
+import { PrismaClient } from '@prisma/client';
+
 const BASE = process.env.API_URL || 'http://localhost:4000/api';
 let failed = 0, passed = 0;
 
@@ -180,6 +182,52 @@ async function main() {
   check('duplicate email rejected (400)', (await call('POST', '/people', admin.token, { role: 'TEACHER', name: 'Dup', email: 'test.student@msit.edu', dept: 'IT' })).status === 400);
   check('admin suspends the account', (await call('PATCH', `/people/${nu.data.id}/status`, admin.token, { status: 'SUSPENDED' })).status === 200);
   check('suspended account is locked out', (await call('POST', '/auth/login', undefined, { identifier: nu.data.rollNo, password: nu.data.tempPassword })).status === 401);
+
+  // ---------- super admin and school accounts ----------
+  // There is no API route that grants SUPERADMIN (by design), so promote a throwaway account in the database,
+  // exactly as scripts/make-superadmin.ts does.
+  const owner = await call('POST', '/people', admin.token, { role: 'TEACHER', name: 'Platform Owner', email: 'platform.owner@msit.edu', dept: 'IT' });
+  const prisma = new PrismaClient();
+  await prisma.user.update({ where: { id: owner.data.id }, data: { role: 'SUPERADMIN' } });
+  await prisma.$disconnect();
+  const sup = await login('platform.owner@msit.edu', owner.data.tempPassword);
+  check('promoted account signs in as SUPERADMIN', sup?.user?.role === 'SUPERADMIN', sup);
+  check('institute admin cannot open the super admin panel (403)', (await call('GET', '/superadmin/subscribers', admin.token)).status === 403);
+  check('student cannot add a school (403)', (await call('POST', '/superadmin/schools', garv.token, { name: 'X School', email: 'x@school.test', plan: 'PRO', durationDays: 30 })).status === 403);
+  const before = (await call('GET', '/superadmin/subscribers', sup.token)).data;
+  const school = await call('POST', '/superadmin/schools', sup.token, { name: 'Smoke Test School', email: 'Smoke.School@Campusone.test', plan: 'PRO', durationDays: 30 });
+  check('super admin adds a school with a temporary password', school.status === 201 && !!school.data.tempPassword && school.data.user.email === 'smoke.school@campusone.test' && school.data.subscription.daysLeft === 30, school.data);
+  check('school creation never returns a password hash', !JSON.stringify(school.data).includes('passwordHash'));
+  check('duplicate school email rejected (400)', (await call('POST', '/superadmin/schools', sup.token, { name: 'Again', email: 'smoke.school@campusone.test', plan: 'PRO', durationDays: 30 })).status === 400);
+  check('unknown plan rejected (400)', (await call('POST', '/superadmin/schools', sup.token, { name: 'Bad Plan', email: 'bad.plan@campusone.test', plan: 'GOLD', durationDays: 30 })).status === 400);
+  const after = (await call('GET', '/superadmin/subscribers', sup.token)).data;
+  check('live subscriber count and PRO count go up by one', after.liveTotal === before.liveTotal + 1 && after.byPlan.PRO === before.byPlan.PRO + 1, { before, after });
+  const found = (await call('GET', '/superadmin/subscribers?q=smoke%20test&plan=PRO', sup.token)).data;
+  check('subscriber search ignores case and filters by plan', found.total === 1 && found.subscribers[0].user.name === 'Smoke Test School', found);
+  check('subscriber list never returns a password hash', !JSON.stringify(after).includes('passwordHash'));
+
+  // A school is a separate customer: it must not see anything belonging to MSIT.
+  const sch = await login('smoke.school@campusone.test', school.data.tempPassword);
+  check('school signs in with its temporary password', sch?.user?.role === 'SCHOOL', sch);
+  const garvId = parent.students[0].id;
+  for (const [what, path] of [
+    ['grades', `/grades?studentId=${garvId}`],
+    ['assignments', `/assignments?studentId=${garvId}`],
+    ['courses', '/courses'],
+    ['announcements', '/announcements'],
+    ['attendance', `/attendance/summary?studentId=${garvId}`],
+    ['timetable', `/timetable?studentId=${garvId}`],
+  ]) {
+    check(`school cannot read MSIT ${what} (403)`, (await call('GET', path, sch.token)).status === 403);
+    check(`super admin cannot read MSIT ${what} (403)`, (await call('GET', path, sup.token)).status === 403);
+  }
+  check('school cannot open the super admin panel (403)', (await call('GET', '/superadmin/subscribers', sch.token)).status === 403);
+  // The tighter rules must not take anything away from the institute roles.
+  check('parent still reads child grades', (await call('GET', `/grades?studentId=${garvId}`, parent.token)).status === 200);
+  check('professor still reads a student\'s grades', (await call('GET', `/grades?studentId=${garvId}`, neha.token)).status === 200);
+  check('student still cannot read another student\'s grades (403)', (await call('GET', `/grades?studentId=${garvId}`, aryan.token)).status === 403);
+  check('admin still sees faculty-only notices', (await call('GET', '/announcements', admin.token)).data.some((a: any) => a.title.startsWith('Faculty meeting')));
+  check('admin still lists every course', (await call('GET', '/courses', admin.token)).data.length >= 3);
 
   console.log(failed ? `\n${failed} of ${passed + failed} checks FAILED` : `\nAll ${passed} checks passed`);
   process.exit(failed ? 1 : 0);

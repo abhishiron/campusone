@@ -17,6 +17,10 @@ class CreateSchoolDto {
   @IsInt({ message: 'Duration must be a whole number of days.' }) @Min(1, { message: 'Duration must be at least 1 day.' }) @Max(3650, { message: 'Duration cannot exceed 3650 days.' }) durationDays: number;
 }
 
+/** SQLite's LIKE already ignores case for ASCII; PostgreSQL needs `mode: 'insensitive'`, which the SQLite client rejects. */
+const IS_POSTGRES = /^postgres(ql)?:/.test(process.env.DATABASE_URL || '');
+const contains = (term: string) => (IS_POSTGRES ? { contains: term, mode: 'insensitive' } : { contains: term }) as { contains: string };
+
 /** Whole days left, rounded up, never negative. */
 const daysLeft = (expiresAt: Date) => Math.max(0, Math.ceil((expiresAt.getTime() - Date.now()) / DAY_MS));
 
@@ -47,7 +51,7 @@ export class SuperAdminController {
       ...(plan ? { plan } : {}),
       user: {
         ...(role ? { role } : {}),
-        ...(term ? { OR: [{ name: { contains: term } }, { email: { contains: term.toLowerCase() } }] } : {}),
+        ...(term ? { OR: [{ name: contains(term) }, { email: contains(term.toLowerCase()) }] } : {}),
       },
     };
 

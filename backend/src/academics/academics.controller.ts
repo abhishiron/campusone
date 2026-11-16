@@ -28,6 +28,7 @@ export class AcademicsController {
 
   /** Admin: all courses. Professor: own courses. Student/parent: the student's class courses. */
   @Get('courses')
+  @Roles('ADMIN', 'TEACHER', 'STUDENT', 'PARENT')
   async courses(@CurrentUser() user: AuthUser, @Query('studentId') studentId?: string) {
     let where: object = {};
     if (user.role === 'TEACHER') where = { teacherId: user.id };
