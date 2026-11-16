@@ -5,9 +5,11 @@ import { roleKey, useAuth } from '@/lib/auth';
 import { API_URL, ApiError } from '@/lib/api';
 import { Icon, Logo, type IconName } from '@/components/Icon';
 import { ThemeButton } from '@/components/Shell';
-import type { Role } from '@/lib/types';
+import type { DemoRole, Role } from '@/lib/types';
 
-const ROLES: Record<Role, { label: string; icon: IconName; blurb: string; idLabel: string; placeholder: string; id: string; pw: string }> = {
+const homeFor = (r?: Role) => (r === 'SUPERADMIN' ? '/superadmin' : '/overview');
+
+const ROLES: Record<DemoRole, { label: string; icon: IconName; blurb: string; idLabel: string; placeholder: string; id: string; pw: string }> = {
   STUDENT: { label: 'Student', icon: 'cap', blurb: 'Learn and submit', idLabel: 'Enrollment number or email', placeholder: 'e.g. 00315003123', id: '00315003123', pw: 'student123' },
   TEACHER: { label: 'Professor', icon: 'board', blurb: 'Teach and grade', idLabel: 'Faculty email', placeholder: 'name@msit.edu', id: 'neha.sharma@msit.edu', pw: 'prof123' },
   ADMIN: { label: 'Admin', icon: 'shield', blurb: 'Run the institute', idLabel: 'Admin email', placeholder: 'name@msit.edu', id: 'admin@msit.edu', pw: 'admin123' },
@@ -16,7 +18,7 @@ const ROLES: Record<Role, { label: string; icon: IconName; blurb: string; idLabe
 const reduceMotion = () => typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 /** Animated campus network behind the login copy. Follows the pointer and the selected role's colour. */
-function Network({ role }: { role: Role }) {
+function Network({ role }: { role: DemoRole }) {
   const ref = useRef<HTMLCanvasElement>(null);
   const roleRef = useRef(role);
   const redraw = useRef<() => void>(() => {});
@@ -102,7 +104,7 @@ function ServiceStatus() {
   );
 }
 
-function Boot({ role, onDone }: { role: Role; onDone: () => void }) {
+function Boot({ role, onDone }: { role: DemoRole; onDone: () => void }) {
   const lines = ['Credentials verified', `Session token issued, role: ${ROLES[role].label.toLowerCase()}`, 'Loading your records', 'Opening your dashboard'];
   const [n, setN] = useState(0);
   useEffect(() => {
@@ -126,17 +128,17 @@ function Boot({ role, onDone }: { role: Role; onDone: () => void }) {
 export default function LoginPage() {
   const { user, loading, login } = useAuth();
   const router = useRouter();
-  const [role, setRole] = useState<Role>('STUDENT');
+  const [role, setRole] = useState<DemoRole>('STUDENT');
   const [id, setId] = useState('');
   const [pw, setPw] = useState('');
   const [show, setShow] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-  const [booting, setBooting] = useState<Role | null>(null);
+  const [booting, setBooting] = useState<DemoRole | null>(null);
   const R = ROLES[role];
 
   useEffect(() => { document.title = 'Sign in | CampusOne'; }, []);
-  useEffect(() => { if (!loading && user && !booting) router.replace('/overview'); }, [user, loading, booting, router]);
+  useEffect(() => { if (!loading && user && !booting) router.replace(homeFor(user.role)); }, [user, loading, booting, router]);
   useEffect(() => { document.body.dataset.role = roleKey(booting ?? role); }, [role, booting]);
 
   const submit = async (e: React.FormEvent) => {
@@ -145,7 +147,7 @@ export default function LoginPage() {
     setBusy(true); setError('');
     try {
       const u = await login(id.trim(), pw);
-      setBooting(u.role);
+      setBooting(u.role === 'SUPERADMIN' || u.role === 'SCHOOL' ? role : u.role);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not sign in.');
       setBusy(false);
@@ -171,7 +173,7 @@ export default function LoginPage() {
           <h2>Sign in to CampusOne</h2>
           <p className="muted">Choose your role to continue.</p>
           <div className="roles" role="radiogroup" aria-label="Role">
-            {(Object.keys(ROLES) as Role[]).map((k) => (
+            {(Object.keys(ROLES) as DemoRole[]).map((k) => (
               <button key={k} type="button" role="radio" aria-checked={k === role} className={`role-opt ${k === role ? 'on' : ''}`}
                 style={{ '--c': `var(--${roleKey(k)})` } as React.CSSProperties} onClick={() => { setRole(k); setError(''); }}>
                 <Icon name={ROLES[k].icon} size={22} /><span><b>{ROLES[k].label}</b><small>{ROLES[k].blurb}</small></span>
@@ -195,7 +197,7 @@ export default function LoginPage() {
           </div>
         </div>
       </section>
-      {booting && <Boot role={booting} onDone={() => router.replace('/overview')} />}
+      {booting && <Boot role={booting} onDone={() => router.replace(homeFor(user?.role))} />}
     </div>
   );
 }

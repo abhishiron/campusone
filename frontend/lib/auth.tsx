@@ -17,7 +17,7 @@ const AuthContext = createContext<AuthValue | null>(null);
 const CHILD_KEY = 'campusone_child';
 
 /** CSS role name used for the accent colour. */
-export const roleKey = (r: Role) => ({ ADMIN: 'admin', TEACHER: 'professor', STUDENT: 'student', PARENT: 'parent' })[r];
+export const roleKey = (r: Role) => ({ SUPERADMIN: 'admin', ADMIN: 'admin', SCHOOL: 'admin', TEACHER: 'professor', STUDENT: 'student', PARENT: 'parent' })[r];
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);

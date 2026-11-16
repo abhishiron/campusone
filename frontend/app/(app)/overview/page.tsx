@@ -257,6 +257,8 @@ function StudentOverview({ parent }: { parent: boolean }) {
 
 export default function OverviewPage() {
   const { user } = useAuth();
+  if (user!.role === 'SUPERADMIN') return <Empty>Open Subscribers from the menu to see live subscribers.</Empty>;
+  if (user!.role === 'SCHOOL') return <Empty>Your school workspace is being set up. Check back soon.</Empty>;
   if (user!.role === 'ADMIN') return <AdminOverview />;
   if (user!.role === 'TEACHER') return <TeacherOverview />;
   return <StudentOverview parent={user!.role === 'PARENT'} />;

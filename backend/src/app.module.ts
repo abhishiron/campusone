@@ -11,6 +11,7 @@ import { AnnouncementsModule } from './announcements/announcements.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { CampusModule } from './campus/campus.module';
+import { SuperAdminModule } from './superadmin/superadmin.module';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { CampusModule } from './campus/campus.module';
     NotificationsModule,
     DashboardModule,
     CampusModule,
+    SuperAdminModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: AuthGuard }],
 })

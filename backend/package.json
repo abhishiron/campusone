@@ -11,7 +11,9 @@
     "db:push": "prisma db push --skip-generate",
     "db:seed": "ts-node --transpile-only prisma/seed.ts",
     "db:reset": "prisma db push --force-reset --skip-generate && npm run db:seed",
-    "test:api": "ts-node --transpile-only test/smoke.ts"
+    "make-superadmin": "ts-node --transpile-only scripts/make-superadmin.ts",
+    "seed-schools": "ts-node --transpile-only scripts/seed-schools.ts",
+    "test:api":"ts-node --transpile-only test/smoke.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.0",
