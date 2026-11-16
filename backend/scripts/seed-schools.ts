@@ -21,7 +21,7 @@ async function main() {
     let user = await prisma.user.findUnique({ where: { email: s.email } });
     if (!user) {
       const password = randomBytes(5).toString('hex');
-      user = await prisma.user.create({ data: { name: s.name, email: s.email, role: 'SCHOOL', passwordHash: await bcrypt.hash(password, 10) } });
+      user = await prisma.user.create({ data: { name: s.name, email: s.email, role: 'SCHOOL', mustChangePassword: true, passwordHash: await bcrypt.hash(password, 10) } });
       printed.push({ name: s.name, email: s.email, password });
       console.log(`Created ${s.name}`);
     } else {

@@ -19,6 +19,8 @@ model User {
   passwordHash  String
   role          String // SUPERADMIN | ADMIN | SCHOOL | TEACHER | STUDENT | PARENT
   status        String         @default("ACTIVE") // ACTIVE | SUSPENDED | ON_LEAVE
+  /// Set when someone else chose the password (a temporary one); the user must pick their own before using the app.
+  mustChangePassword Boolean   @default(false)
   dept          String?
   designation   String?
   createdAt     DateTime       @default(now())

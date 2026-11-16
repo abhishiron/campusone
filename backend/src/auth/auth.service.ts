@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../prisma.service';
@@ -24,9 +24,18 @@ export class AuthService {
     return { token, ...(await this.profile(authUser)) };
   }
 
+  /** Replace the password. Required before anything else when the account still has a temporary one. */
+  async changePassword(user: AuthUser, currentPassword: string, newPassword: string) {
+    const row = await this.prisma.user.findUniqueOrThrow({ where: { id: user.id }, select: { passwordHash: true } });
+    if (!(await bcrypt.compare(currentPassword, row.passwordHash))) throw new BadRequestException('Your current password is not correct.');
+    if (currentPassword === newPassword) throw new BadRequestException('Choose a password different from the current one.');
+    await this.prisma.user.update({ where: { id: user.id }, data: { passwordHash: await bcrypt.hash(newPassword, 10), mustChangePassword: false } });
+    return this.profile(user);
+  }
+
   /** The signed-in user plus the students they can view (self for students, children for parents). */
   async profile(user: AuthUser) {
-    const full = await this.prisma.user.findUniqueOrThrow({ where: { id: user.id }, select: { dept: true, designation: true } });
+    const full = await this.prisma.user.findUniqueOrThrow({ where: { id: user.id }, select: { dept: true, designation: true, mustChangePassword: true } });
     let where: object | null = null;
     if (user.role === 'STUDENT') where = { userId: user.id };
     if (user.role === 'PARENT') where = { parentId: user.id };
@@ -38,11 +47,13 @@ export class AuthService {
       classroom: s.classroom.name, program: s.classroom.program, batch: s.classroom.batch, semester: s.classroom.semester,
     }));
     const title =
-      user.role === 'ADMIN' ? 'System administrator'
+      user.role === 'SUPERADMIN' ? 'Platform owner'
+      : user.role === 'SCHOOL' ? 'School account'
+      : user.role === 'ADMIN' ? 'System administrator'
       : user.role === 'TEACHER' ? `${full.designation ?? 'Professor'}, ${full.dept ?? ''}`.replace(/, $/, '')
       : user.role === 'STUDENT' && students[0] ? `${students[0].program}, semester ${students[0].semester}`
       : user.role === 'PARENT' ? `Parent of ${students.map((s) => s.name.split(' ')[0]).join(' and ') || 'a student'}`
       : '';
-    return { user: { ...user, title }, students };
+    return { user: { ...user, title, mustChangePassword: full.mustChangePassword }, students };
   }
 }

@@ -20,6 +20,68 @@ interface SubscribersResponse {
 }
 interface CreatedSchool { user: { id: string; name: string; email: string; role: string }; subscription: { plan: string; expiresAt: string }; tempPassword: string }
 
+type Action = { kind: 'renew' | 'cancel' | 'reset'; sub: Subscriber };
+
+/** Renew, cancel, or reset a school's password. Each one confirms first; a reset shows the new password once. */
+function SubscriberAction({ action, onClose, onDone }: { action: Action; onClose: () => void; onDone: () => void }) {
+  const { busy, run } = useAction();
+  const [temp, setTemp] = useState<string | null>(null);
+  const { kind, sub } = action;
+  const who = sub.user.name;
+
+  if (temp) {
+    return (
+      <Modal title="New temporary password" onClose={onDone}>
+        <p style={{ marginBottom: 12 }}>Share this with {who}. It is shown only once, and they must choose their own password when they sign in.</p>
+        <dl className="kv"><dt>Email</dt><dd className="mono">{sub.user.email}</dd><dt>Temporary password</dt><dd className="mono">{temp}</dd></dl>
+        <div className="actions"><button className="btn primary" onClick={onDone}>Done</button></div>
+      </Modal>
+    );
+  }
+
+  if (kind === 'renew') {
+    const submit = async (e: React.FormEvent<HTMLFormElement>) => {
+      e.preventDefault();
+      const days = Number(new FormData(e.currentTarget).get('durationDays'));
+      const res = await run(() => api<{ expiresAt: string }>(`/superadmin/subscriptions/${sub.id}/renew`, { method: 'POST', body: { durationDays: days } }), (r) => `${who} renewed until ${date(r.expiresAt)}`);
+      if (res) onDone();
+    };
+    return (
+      <Modal title={`Renew ${who}`} onClose={onClose}>
+        <form onSubmit={submit}>
+          <p style={{ marginBottom: 12 }}>The {sub.plan} plan currently ends on {date(sub.expiresAt)}. Extra days are added after that date.</p>
+          <label className="field"><span>Add days</span><input name="durationDays" type="number" required min={1} max={3650} defaultValue={365} /></label>
+          <div className="actions"><button type="button" className="btn" onClick={onClose}>Cancel</button><button className="btn primary" disabled={busy}>Renew</button></div>
+        </form>
+      </Modal>
+    );
+  }
+
+  if (kind === 'cancel') {
+    const confirm = async () => {
+      const res = await run(() => api(`/superadmin/subscriptions/${sub.id}/cancel`, { method: 'POST' }), `${who}'s plan ended`);
+      if (res) onDone();
+    };
+    return (
+      <Modal title={`End ${who}'s plan?`} onClose={onClose}>
+        <p style={{ marginBottom: 14 }}>The {sub.plan} plan ends now and {who} leaves the live subscriber list. The account and its data are kept, and you can add a new plan later.</p>
+        <div className="actions"><button className="btn" onClick={onClose}>Keep plan</button><button className="btn primary" disabled={busy} onClick={confirm}>End plan</button></div>
+      </Modal>
+    );
+  }
+
+  const reset = async () => {
+    const res = await run(() => api<{ tempPassword: string }>(`/superadmin/schools/${sub.user.id}/reset-password`, { method: 'POST' }));
+    if (res) setTemp(res.tempPassword);
+  };
+  return (
+    <Modal title={`Reset ${who}'s password?`} onClose={onClose}>
+      <p style={{ marginBottom: 14 }}>Their current password stops working straight away. You get a new temporary password to hand over.</p>
+      <div className="actions"><button className="btn" onClick={onClose}>Cancel</button><button className="btn primary" disabled={busy} onClick={reset}>Reset password</button></div>
+    </Modal>
+  );
+}
+
 const date = (iso: string) => new Date(iso).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
 const leftTone = (d: number) => (d <= 7 ? 'bad' : d <= 30 ? 'warn' : 'ok');
 
@@ -38,7 +100,7 @@ function AddSchool({ onClose, onDone }: { onClose: () => void; onDone: () => voi
   if (created) {
     return (
       <Modal title="School created" onClose={onDone}>
-        <p style={{ marginBottom: 12 }}>Share these sign-in details with {created.user.name}. The password is shown only once.</p>
+        <p style={{ marginBottom: 12 }}>Share these sign-in details with {created.user.name}. The password is shown only once, and they must choose their own when they first sign in.</p>
         <dl className="kv">
           <dt>Email</dt><dd className="mono">{created.user.email}</dd>
           <dt>Temporary password</dt><dd className="mono">{created.tempPassword}</dd>
@@ -73,6 +135,7 @@ export default function SuperAdminPage() {
   const [debounced, setDebounced] = useState('');
   const [page, setPage] = useState(1);
   const [adding, setAdding] = useState(false);
+  const [action, setAction] = useState<Action | null>(null);
   useEffect(() => { const t = setTimeout(() => { setDebounced(q); setPage(1); }, 250); return () => clearTimeout(t); }, [q]);
 
   const isSuper = user?.role === 'SUPERADMIN';
@@ -109,7 +172,7 @@ export default function SuperAdminPage() {
             {(d) => d.subscribers.length ? (
               <>
                 <table className="tbl">
-                  <thead><tr><th>Name</th><th>Role</th><th>Plan</th><th>Expires on</th><th>Days left</th></tr></thead>
+                  <thead><tr><th>Name</th><th>Role</th><th>Plan</th><th>Expires on</th><th>Days left</th><th><span className="sr-only">Actions</span></th></tr></thead>
                   <tbody>
                     {d.subscribers.map((s) => (
                       <tr key={s.id}>
@@ -118,6 +181,13 @@ export default function SuperAdminPage() {
                         <td><Pill tone="acc">{s.plan}</Pill></td>
                         <td>{date(s.expiresAt)}</td>
                         <td><Pill tone={leftTone(s.daysLeft)}>{s.daysLeft} {s.daysLeft === 1 ? 'day' : 'days'}</Pill></td>
+                        <td>
+                          <div className="tools" style={{ justifyContent: 'flex-end', gap: 6 }}>
+                            <button className="btn sm" onClick={() => setAction({ kind: 'renew', sub: s })} aria-label={`Renew ${s.user.name}`}>Renew</button>
+                            {s.user.role === 'SCHOOL' && <button className="btn sm" onClick={() => setAction({ kind: 'reset', sub: s })} aria-label={`Reset password for ${s.user.name}`}>Reset</button>}
+                            <button className="btn sm" onClick={() => setAction({ kind: 'cancel', sub: s })} aria-label={`End plan for ${s.user.name}`}>End plan</button>
+                          </div>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -134,6 +204,7 @@ export default function SuperAdminPage() {
           </Async>
         </div>
       </section>
+      {action && <SubscriberAction action={action} onClose={() => setAction(null)} onDone={() => { setAction(null); state.reload(); }} />}
       {adding && <AddSchool onClose={() => setAdding(false)} onDone={() => { setAdding(false); state.reload(); }} />}
     </>
   );

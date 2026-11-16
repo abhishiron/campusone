@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth';
 import { Shell } from '@/components/Shell';
 import { Loading } from '@/components/ui';
+import { ChangePassword } from '@/components/ChangePassword';
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
@@ -12,5 +13,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     if (!loading && !user) router.replace('/login');
   }, [user, loading, router]);
   if (loading || !user) return <Loading label="Loading your workspace" />;
+  if (user.mustChangePassword) return <ChangePassword />;
   return <Shell>{children}</Shell>;
 }
