@@ -1,6 +1,6 @@
 // CampusOne data model.
-// Runs on SQLite for a zero-setup demo. To move to PostgreSQL, change
-// `provider` to "postgresql", set DATABASE_URL to your Postgres URL and run `npm run db:push`.
+// Local development runs on SQLite (zero setup). Docker and production run on PostgreSQL:
+// the npm `pg:*` scripts generate a PostgreSQL copy of this schema (scripts/use-postgres.js).
 // SQLite has no enums, so status-like fields are strings; allowed values are listed in comments.
 
 generator client {

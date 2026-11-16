@@ -5,6 +5,7 @@ import { AccessService } from './access.service';
 import { NotifyService } from './notify.service';
 import { ActivityService } from './activity.service';
 import { FilesService } from './files.service';
+import { CacheService } from './cache.service';
 
 const DEV_SECRET = 'campusone-dev-secret-change-me';
 const secret = process.env.JWT_SECRET || DEV_SECRET;
@@ -25,7 +26,7 @@ if (secret === DEV_SECRET || secret.length < 32) {
       signOptions: { expiresIn: '7d' },
     }),
   ],
-  providers: [PrismaService, AccessService, NotifyService, ActivityService, FilesService],
-  exports: [PrismaService, AccessService, NotifyService, ActivityService, FilesService, JwtModule],
+  providers: [PrismaService, AccessService, NotifyService, ActivityService, FilesService, CacheService],
+  exports: [PrismaService, AccessService, NotifyService, ActivityService, FilesService, CacheService, JwtModule],
 })
 export class CommonModule {}

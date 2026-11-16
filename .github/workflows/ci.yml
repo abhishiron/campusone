@@ -1,0 +1,80 @@
+# Continuous integration: every push and pull request is type-checked, built and tested.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  api-tests:
+    name: API checks (PostgreSQL + Redis)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: campusone
+          POSTGRES_PASSWORD: campusone
+          POSTGRES_DB: campusone
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U campusone" --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://campusone:campusone@localhost:5432/campusone
+      REDIS_URL: redis://localhost:6379
+      JWT_SECRET: ci-only-secret-0123456789abcdef0123456789abcdef
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      - run: npm run pg:generate
+      - run: npm run typecheck
+      - name: Create tables and load demo data
+        run: npm run pg:reset
+      - name: Start the API
+        run: |
+          npx ts-node --transpile-only src/main.ts > api.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf http://localhost:4000/api/health && exit 0; sleep 1; done
+          cat api.log; exit 1
+      - name: Run the end-to-end API checks
+        run: npm run test:api
+
+  web-build:
+    name: Web app type-check and build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm run build
+
+  docker:
+    name: Docker images build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the Compose stack
+        run: docker compose build
+        env:
+          JWT_SECRET: ci-only-secret-0123456789abcdef0123456789abcdef
