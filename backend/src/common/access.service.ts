@@ -7,8 +7,10 @@ import { AuthUser } from './types';
 export class AccessService {
   constructor(private prisma: PrismaService) {}
 
-  /** Students see themselves, parents see their children, staff see everyone. */
+  /** Students see themselves, parents see their children, institute staff (ADMIN, TEACHER) see everyone.
+      Allow-list on purpose: any other role (SUPERADMIN, SCHOOL, or one added later) is refused until it is given access here. */
   async assertCanViewStudent(user: AuthUser, studentId: string) {
+    if (!['ADMIN', 'TEACHER', 'STUDENT', 'PARENT'].includes(user.role)) throw new ForbiddenException('Your role does not have access to student records.');
     const student = await this.prisma.student.findUnique({ where: { id: studentId } });
     if (!student) throw new NotFoundException('Student not found.');
     if (user.role === 'STUDENT' && student.userId !== user.id) throw new ForbiddenException('You can only view your own records.');

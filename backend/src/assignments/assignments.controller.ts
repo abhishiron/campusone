@@ -49,6 +49,7 @@ export class AssignmentsController {
   ) {}
 
   @Get('assignments')
+  @Roles('ADMIN', 'TEACHER', 'STUDENT', 'PARENT')
   async list(@CurrentUser() user: AuthUser, @Query('studentId') studentId?: string) {
     if (user.role === 'TEACHER' || user.role === 'ADMIN') {
       const rows = await this.prisma.assignment.findMany({

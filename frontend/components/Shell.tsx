@@ -12,6 +12,8 @@ import { attNote } from './attendance';
 
 type NavItem = [href: string, label: string, icon: IconName] | [group: '#', label: string];
 const NAV: Record<Role, NavItem[]> = {
+  SUPERADMIN: [['/superadmin', 'Subscribers', 'users']],
+  SCHOOL: [['/overview', 'Overview', 'grid']],
   ADMIN: [['/overview', 'Overview', 'grid'], ['/users', 'Users', 'users'], ['/courses', 'Courses', 'book'], ['/announcements', 'Announcements', 'speaker']],
   TEACHER: [
     ['/overview', 'Overview', 'grid'], ['/attendance', 'Attendance', 'calcheck'], ['/assignments', 'Assignments', 'file'], ['/grades', 'Grades', 'chart'],
@@ -29,6 +31,7 @@ const NAV: Record<Role, NavItem[]> = {
   ],
 };
 const ROLE_META: Record<Role, { label: string; icon: IconName }> = {
+  SUPERADMIN: { label: 'Super admin', icon: 'shield' }, SCHOOL: { label: 'School', icon: 'home' },
   ADMIN: { label: 'Admin', icon: 'shield' }, TEACHER: { label: 'Professor', icon: 'board' }, STUDENT: { label: 'Student', icon: 'cap' }, PARENT: { label: 'Parent', icon: 'home' },
 };
 

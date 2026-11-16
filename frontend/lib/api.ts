@@ -27,7 +27,7 @@ async function request(path: string, init: RequestInit) {
   try {
     res = await fetch(API_URL + path, { ...init, headers: { ...(init.headers || {}), ...(token ? { Authorization: `Bearer ${token}` } : {}) } });
   } catch {
-    throw new ApiError('Cannot reach the server. Check that the backend is running on port 4000.', 0);
+    throw new ApiError(`Cannot reach the server at ${API_URL}. Check the backend URL and connection.`, 0);
   }
   if (!res.ok) {
     const data = await res.json().catch(() => null);

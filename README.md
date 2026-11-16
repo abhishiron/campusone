@@ -70,7 +70,7 @@ Be upfront about this in the demo: the features and four roles work end to end, 
 
 ## Checks
 
-With the API running and fresh demo data (`npm run reset-data`), `npm run test:api` runs 75 end-to-end API checks covering sign-in, role protection, attendance and alerts, check-in, files, grading, study rooms, library, fees, leave, placements, announcements and admin. Run `npm run reset-data` again afterwards to get the demo data back.
+With the API running and fresh demo data (`npm run reset-data`), `npm run test:api` runs end-to-end API checks covering sign-in, role protection, attendance and alerts, check-in, files, grading, study rooms, library, fees, leave, placements, announcements, admin, and the super admin panel (including that school accounts cannot read any MSIT data). Run `npm run reset-data` again afterwards to get the demo data back.
 
 ## Structure
 

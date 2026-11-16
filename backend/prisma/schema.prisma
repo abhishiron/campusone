@@ -17,7 +17,7 @@ model User {
   name          String
   email         String         @unique
   passwordHash  String
-  role          String // ADMIN | TEACHER | STUDENT | PARENT
+  role          String // SUPERADMIN | ADMIN | SCHOOL | TEACHER | STUDENT | PARENT
   status        String         @default("ACTIVE") // ACTIVE | SUSPENDED | ON_LEAVE
   dept          String?
   designation   String?
@@ -32,6 +32,21 @@ model User {
   resources     Resource[]
   votes         ResourceVote[]
   checkWindows  CheckWindow[]
+  subscriptions Subscription[]
+}
+
+/// A paid plan held by a user (for example a school account). "Live" means ACTIVE and not yet expired.
+model Subscription {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan      String // FREE | PRO | INSTITUTION
+  status    String // ACTIVE | CANCELLED | EXPIRED
+  startedAt DateTime @default(now())
+  expiresAt DateTime
+
+  @@index([status, expiresAt])
+  @@index([userId])
 }
 
 model Classroom {

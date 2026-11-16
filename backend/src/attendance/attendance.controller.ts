@@ -132,6 +132,7 @@ export class AttendanceController {
 
   /** The attendance tracker: per-subject numbers, settings and alert history. */
   @Get('summary')
+  @Roles('ADMIN', 'TEACHER', 'STUDENT', 'PARENT')
   async summary(@CurrentUser() user: AuthUser, @Query('studentId') studentId?: string) {
     const sid = await this.access.resolveStudentId(user, studentId);
     const [summary, alerts] = await Promise.all([
